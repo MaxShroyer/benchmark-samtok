@@ -298,11 +298,21 @@ def load_dataset_robust(dataset_name: str, split: str, token: str | None):
     fail with a cast error. In those cases, streaming mode often succeeds because
     it avoids the prepare step.
     """
+    def _exception_chain_messages(exc: BaseException) -> List[str]:
+        msgs: List[str] = []
+        seen: set[int] = set()
+        cur: BaseException | None = exc
+        while cur is not None and id(cur) not in seen:
+            seen.add(id(cur))
+            msgs.append(f"{type(cur).__name__}: {cur}")
+            cur = cur.__cause__ or cur.__context__
+        return msgs
+
     try:
         return load_dataset(dataset_name, split=split, token=token)
     except DatasetGenerationError as exc:
-        msg = str(exc)
-        if "Couldn't cast array of type" not in msg:
+        chain_msgs = _exception_chain_messages(exc)
+        if not any("Couldn't cast array of type" in m for m in chain_msgs):
             raise
 
         print(
