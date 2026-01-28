@@ -147,6 +147,20 @@ def _load_module_directly(name: str, filepath: str):
     spec = importlib.util.spec_from_file_location(name, filepath)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_package_directly(name: str, package_dir: str):
+    """Load a Python package from <package_dir>/__init__.py without parents' __init__.py."""
+    import importlib.util
+
+    init_py = os.path.join(package_dir, "__init__.py")
+    spec = importlib.util.spec_from_file_location(name, init_py, submodule_search_locations=[package_dir])
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
 
@@ -175,11 +189,13 @@ def build_samtok(model_path: str, device: torch.device):
         if pkg_name not in sys.modules:
             sys.modules[pkg_name] = types.ModuleType(pkg_name)
 
-    # Load losses.py first (dependency of sam2.py)
-    losses_module = _load_module_directly(
-        "projects.samtok.models.losses",
-        os.path.join(models_dir, "losses.py"),
-    )
+    # Load losses first (dependency of sam2.py). In Sa2VA, this is a package: models/losses/
+    losses_dir = os.path.join(models_dir, "losses")
+    if os.path.isdir(losses_dir):
+        _load_package_directly("projects.samtok.models.losses", losses_dir)
+    else:
+        # Older layouts may have a single losses.py file
+        _load_module_directly("projects.samtok.models.losses", os.path.join(models_dir, "losses.py"))
 
     # Load sam2.py
     sam2_module = _load_module_directly(
