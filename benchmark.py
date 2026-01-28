@@ -3,6 +3,7 @@ import io
 import json
 import os
 import sys
+import time
 import traceback
 from typing import Any, Dict, List, Tuple
 
@@ -49,6 +50,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="results")
     parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--save-per-sample", action="store_true")
+    parser.add_argument("--no-wandb", action="store_true", help="Disable Weights & Biases logging")
+    parser.add_argument("--wandb-project", default="samtok-benchmark")
+    parser.add_argument("--wandb-entity", default=None)
+    parser.add_argument("--wandb-run-name", default=None)
+    parser.add_argument("--wandb-tags", default="")
+    parser.add_argument("--wandb-log-every", type=int, default=1)
     return parser.parse_args()
 
 
@@ -475,6 +482,28 @@ def predict_masks(
     return decode_masks_from_codes(vq_sam2, sam2_image_processor, image, normalized_codes)
 
 
+def init_wandb(args: argparse.Namespace):
+    if args.no_wandb:
+        return None, None
+    api_key = os.getenv("WANDB_API_KEY")
+    if not api_key:
+        return None, None
+    try:
+        import wandb
+    except ImportError:
+        print("Warning: WANDB_API_KEY set but wandb is not installed.")
+        return None, None
+
+    tags = [tag.strip() for tag in args.wandb_tags.split(",") if tag.strip()]
+    run = wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=args.wandb_run_name,
+        tags=tags or None,
+    )
+    return wandb, run
+
+
 def main() -> None:
     args = parse_args()
     load_dotenv()
@@ -486,6 +515,24 @@ def main() -> None:
 
     dataset_names = [name.strip() for name in args.dataset.split(",") if name.strip()]
     results = []
+    wandb, wandb_run = init_wandb(args)
+    run_start = time.perf_counter()
+
+    if wandb_run is not None:
+        wandb.config.update(
+            {
+                "model": args.model,
+                "datasets": dataset_names,
+                "split_arg": args.split,
+                "max_samples": args.max_samples,
+                "max_new_tokens": args.max_new_tokens,
+                "save_per_sample": args.save_per_sample,
+            }
+        )
+        wandb.define_metric("expr_step")
+        wandb.define_metric("sample/*", step_metric="expr_step")
+        wandb.define_metric("perf/*", step_metric="expr_step")
+        wandb.define_metric("summary/*")
 
     for dataset_name in dataset_names:
         hf_token = resolve_hf_token(dataset_name)
@@ -522,6 +569,7 @@ def main() -> None:
                         break
 
                     prompt = build_prompt(expression)
+                    pred_start = time.perf_counter()
                     pred_masks = predict_masks(
                         model,
                         processor,
@@ -531,6 +579,7 @@ def main() -> None:
                         prompt,
                         args.max_new_tokens,
                     )
+                    pred_end = time.perf_counter()
 
                     gt_mask = decode_rle(inst.get("mask"), height, width)
                     primary_mask = select_primary_mask(pred_masks)
@@ -542,6 +591,7 @@ def main() -> None:
                     set_metrics = compute_set_metrics(pred_masks, gt_mask)
                     sample_metrics.update(set_metrics)
                     tracker.update(sample_metrics)
+                    expr_end = time.perf_counter()
 
                     if args.save_per_sample:
                         per_sample_results.append(
@@ -559,10 +609,38 @@ def main() -> None:
                                     "pred_count": sample_metrics["pred_count"],
                                     "gt_count": sample_metrics["gt_count"],
                                 },
+                                "timing": {
+                                    "predict_latency_s": pred_end - pred_start,
+                                    "expr_latency_s": expr_end - pred_start,
+                                },
                             }
                         )
 
                     total_expr += 1
+                    if wandb_run is not None and args.wandb_log_every > 0:
+                        if total_expr % args.wandb_log_every == 0:
+                            throughput = total_expr / max(time.perf_counter() - run_start, 1e-6)
+                            wandb.log(
+                                {
+                                    "expr_step": total_expr,
+                                    "sample/iou": sample_metrics["iou"],
+                                    "sample/precision": sample_metrics["precision"],
+                                    "sample/recall": sample_metrics["recall"],
+                                    "sample/f1": sample_metrics["f1"],
+                                    "sample/gIoU": sample_metrics["gIoU"],
+                                    "sample/cIoU": sample_metrics["cIoU"],
+                                    "sample/n_acc": sample_metrics["n_acc"],
+                                    "sample/pred_count": sample_metrics["pred_count"],
+                                    "sample/gt_count": sample_metrics["gt_count"],
+                                    "sample/dataset": dataset_name,
+                                    "sample/split": split,
+                                    "sample/image_id": sample.get("image_id"),
+                                    "sample/expression": expression,
+                                    "perf/predict_latency_s": pred_end - pred_start,
+                                    "perf/expr_latency_s": expr_end - pred_start,
+                                    "perf/throughput_expr_s": throughput,
+                                }
+                            )
                 if args.max_samples and total_expr >= args.max_samples:
                     break
 
@@ -580,6 +658,22 @@ def main() -> None:
                     "per_sample_results": per_sample_results if args.save_per_sample else None,
                 }
             )
+            if wandb_run is not None:
+                summary = tracker.summary()
+                wandb.log(
+                    {
+                        "summary/mIoU": summary["mIoU"],
+                        "summary/precision": summary["precision"],
+                        "summary/recall": summary["recall"],
+                        "summary/f1": summary["f1"],
+                        "summary/gIoU": summary["gIoU"],
+                        "summary/cIoU": summary["cIoU"],
+                        "summary/n_acc": summary["n_acc"],
+                        "summary/count": summary["count"],
+                        "summary/dataset": dataset_name,
+                        "summary/split": split,
+                    }
+                )
 
     os.makedirs(args.output_dir, exist_ok=True)
     if len(results) == 1:
@@ -597,6 +691,12 @@ def main() -> None:
     )
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2)
+
+    if wandb_run is not None:
+        artifact = wandb.Artifact("benchmark-results", type="results")
+        artifact.add_file(output_path)
+        wandb_run.log_artifact(artifact)
+        wandb_run.finish()
 
 
 if __name__ == "__main__":

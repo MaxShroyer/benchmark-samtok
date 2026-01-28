@@ -24,6 +24,12 @@ plus gIoU/cIoU/N-acc for comparison with paper metrics.
    export HF_TOKEN=your_hf_token
    ```
 
+4. (Optional) Enable Weights & Biases logging:
+
+   ```bash
+   export WANDB_API_KEY=your_wandb_key
+   ```
+
 ## Run a Single Model
 
 ```bash
@@ -37,6 +43,9 @@ Options:
 - `--output-dir results` to change output location
 - `--dataset` accepts comma-separated dataset names for comparison
 - `--split` accepts comma-separated splits; if omitted, dataset defaults are used
+- `--no-wandb` to disable W&B logging even if `WANDB_API_KEY` is set
+- `--wandb-project`, `--wandb-entity`, `--wandb-run-name`, `--wandb-tags` to customize W&B runs
+- `--wandb-log-every N` to control streaming log frequency
 
 ## Run All Models (Parallel GPUs)
 
