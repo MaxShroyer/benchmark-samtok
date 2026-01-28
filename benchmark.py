@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import traceback
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
@@ -79,19 +80,48 @@ def load_vlm(model_path: str) -> torch.nn.Module:
 
 
 def load_processor(model_path: str) -> AutoProcessor:
+    base_kwargs: Dict[str, Any] = {}
+    # Qwen VL processors frequently rely on custom code in the repo.
+    if "qwen" in model_path.lower():
+        base_kwargs["trust_remote_code"] = True
+
+    # If torchvision isn't available, "fast" image processing can't be used anyway.
+    # Avoid the noisy warning + fallback by explicitly disabling it.
     try:
-        return AutoProcessor.from_pretrained(model_path)
-    except TypeError as exc:
-        message = str(exc)
-        if "video_processing_auto" not in message and "video_processor" not in message:
+        import torchvision  # noqa: F401
+    except Exception:
+        base_kwargs["use_fast"] = False
+
+    try:
+        return AutoProcessor.from_pretrained(model_path, **base_kwargs)
+    except TypeError:
+        tb = traceback.format_exc()
+        # Transformers may crash inside video_processing_auto when a model declares a
+        # video processor but provides no class name (e.g. `None`).
+        if "video_processing_auto" not in tb and "video_processor" not in tb:
             raise
+
         # Work around models that declare a video processor without a class.
-        try:
-            return AutoProcessor.from_pretrained(model_path, video_processor=None)
-        except TypeError:
-            return AutoProcessor.from_pretrained(
-                model_path, trust_remote_code=True, video_processor=None
-            )
+        fallback_kwargs_list = [
+            {**base_kwargs, "video_processor": None},
+            {**base_kwargs, "use_fast": False, "video_processor": None},
+            {**base_kwargs, "trust_remote_code": True, "video_processor": None},
+            {
+                **base_kwargs,
+                "trust_remote_code": True,
+                "use_fast": False,
+                "video_processor": None,
+            },
+        ]
+        last_exc: Exception | None = None
+        for kwargs in fallback_kwargs_list:
+            try:
+                return AutoProcessor.from_pretrained(model_path, **kwargs)
+            except Exception as exc:  # pragma: no cover - best-effort compatibility
+                last_exc = exc
+                continue
+        assert last_exc is not None
+        raise last_exc
 
 
 def build_samtok(model_path: str, device: torch.device):
