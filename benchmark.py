@@ -9,10 +9,10 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-from datasets import get_dataset_split_names, load_dataset
+from datasets import IterableDataset, get_dataset_split_names, load_dataset
 from datasets.exceptions import DatasetGenerationError
 from dotenv import load_dotenv
-from huggingface_hub import hf_hub_download
+from huggingface_hub import HfApi, hf_hub_download
 from PIL import Image
 from tqdm import tqdm
 from transformers import AutoProcessor
@@ -289,6 +289,35 @@ def resolve_hf_token(dataset_name: str) -> str | None:
     return token
 
 
+def load_parquet_fallback(dataset_name: str, split: str, token: str | None):
+    """
+    Fallback loader that bypasses dataset info/feature casting by reading parquet
+    files directly from the dataset repo.
+    """
+    api = HfApi(token=token)
+    repo_files = api.list_repo_files(dataset_name, repo_type="dataset")
+    parquet_files = [path for path in repo_files if path.endswith(".parquet")]
+    if not parquet_files:
+        raise RuntimeError(f"No parquet files found in dataset repo {dataset_name}.")
+
+    split_key = normalize_split_name(split)
+    matched = []
+    for path in parquet_files:
+        name = normalize_split_name(os.path.basename(path))
+        if split_key and split_key in name:
+            matched.append(path)
+
+    data_files = matched or parquet_files
+    hf_paths = [f"hf://datasets/{dataset_name}/{path}" for path in data_files]
+    return load_dataset(
+        "parquet",
+        data_files=hf_paths,
+        split="train",
+        streaming=True,
+        token=token,
+    )
+
+
 def load_dataset_robust(dataset_name: str, split: str, token: str | None):
     """
     Load a dataset split, with a fallback for parquet schema mismatches.
@@ -319,7 +348,23 @@ def load_dataset_robust(dataset_name: str, split: str, token: str | None):
             f"Warning: failed to build {dataset_name}:{split} due to a parquet schema mismatch. "
             "Retrying in streaming mode."
         )
-        return load_dataset(dataset_name, split=split, token=token, streaming=True)
+        dataset = load_dataset(dataset_name, split=split, token=token, streaming=True)
+        if isinstance(dataset, IterableDataset):
+            try:
+                next(iter(dataset))
+            except TypeError as inner_exc:
+                if "Couldn't cast array of type" in str(inner_exc):
+                    print(
+                        f"Warning: streaming cast failed for {dataset_name}:{split}. "
+                        "Falling back to direct parquet reader."
+                    )
+                    return load_parquet_fallback(dataset_name, split, token)
+                raise
+            except StopIteration:
+                pass
+            # Re-create to avoid skipping the first sample from the check above.
+            dataset = load_dataset(dataset_name, split=split, token=token, streaming=True)
+        return dataset
 
 
 def iter_expressions(sample: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
@@ -448,6 +493,11 @@ def main() -> None:
 
         for split in splits:
             dataset = load_dataset_robust(dataset_name, split=split, token=hf_token)
+            if isinstance(dataset, IterableDataset):
+                print(
+                    f"Loaded {dataset_name}:{split} in streaming mode; "
+                    "progress has no total and may start at 0it."
+                )
             tracker = MetricTracker()
             per_sample_results = []
 
@@ -516,6 +566,11 @@ def main() -> None:
                 if args.max_samples and total_expr >= args.max_samples:
                     break
 
+            if total_expr == 0:
+                print(
+                    f"Warning: no expressions processed for {dataset_name}:{split}. "
+                    "Check the split name or dataset access."
+                )
             results.append(
                 {
                     "model": args.model,
