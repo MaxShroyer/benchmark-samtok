@@ -1,0 +1,8 @@
+torch
+transformers
+datasets
+pycocotools
+pillow
+numpy
+tqdm
+accelerate
