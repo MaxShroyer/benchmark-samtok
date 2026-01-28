@@ -78,6 +78,22 @@ def load_vlm(model_path: str) -> torch.nn.Module:
     return model_cls.from_pretrained(model_path, torch_dtype="auto")
 
 
+def load_processor(model_path: str) -> AutoProcessor:
+    try:
+        return AutoProcessor.from_pretrained(model_path)
+    except TypeError as exc:
+        message = str(exc)
+        if "video_processing_auto" not in message and "video_processor" not in message:
+            raise
+        # Work around models that declare a video processor without a class.
+        try:
+            return AutoProcessor.from_pretrained(model_path, video_processor=None)
+        except TypeError:
+            return AutoProcessor.from_pretrained(
+                model_path, trust_remote_code=True, video_processor=None
+            )
+
+
 def build_samtok(model_path: str, device: torch.device):
     samtok_path = ensure_samtok_imports()
     if not samtok_path:
@@ -281,7 +297,7 @@ def main() -> None:
 
     model = load_vlm(args.model)
     model = model.cuda().eval()
-    processor = AutoProcessor.from_pretrained(args.model)
+    processor = load_processor(args.model)
     vq_sam2, sam2_image_processor = build_samtok(args.model, model.device)
 
     dataset_names = [name.strip() for name in args.dataset.split(",") if name.strip()]

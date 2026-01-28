@@ -40,7 +40,12 @@ MODELS: List[ModelConfig] = [
 DATASET_NAME = "moondream/refcoco-m"
 DATASET_SPLIT = "refcoco_val"
 DATASET_DEFAULT_SPLITS = {
-    "lmms-lab/RefCOCOplus": "validation",
+    "lmms-lab/RefCOCOplus": "val",
+    "moondream/refcoco_plus_rle_val": "validation",
+    "moondream/refcoco_rle": "validation",
+    "moondream/lvis_segmentation": "validation",
+    "moondream/refcoco-m": "validation",
+
 }
 
 PROMPT_TEMPLATE = (
