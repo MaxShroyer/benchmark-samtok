@@ -139,6 +139,17 @@ class DirectResize:
         return np.array(resized)
 
 
+def _load_module_directly(name: str, filepath: str):
+    """Load a Python module directly from file, bypassing package __init__.py."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(name, filepath)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def build_samtok(model_path: str, device: torch.device):
     samtok_path = ensure_samtok_imports()
     if not samtok_path:
@@ -150,13 +161,31 @@ def build_samtok(model_path: str, device: torch.device):
             "  - or place the clone at `../Sa2VA` relative to this benchmark repo.\n"
         )
 
-    # Import directly from sam2.py to avoid the __init__.py which pulls in xtuner
-    import importlib.util
+    # Import modules directly to avoid the __init__.py which pulls in xtuner.
+    # We need to pre-load dependencies and register them in sys.modules so that
+    # when sam2.py imports from projects.samtok.models.losses, Python finds our
+    # pre-loaded module instead of triggering the package __init__.py.
+    models_dir = os.path.join(samtok_path, "projects", "samtok", "models")
 
-    sam2_module_path = os.path.join(samtok_path, "projects", "samtok", "models", "sam2.py")
-    spec = importlib.util.spec_from_file_location("sam2_module", sam2_module_path)
-    sam2_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(sam2_module)
+    # Create stub parent packages to prevent __init__.py from running
+    import types
+
+    for pkg_name in ["projects", "projects.samtok", "projects.samtok.models"]:
+        if pkg_name not in sys.modules:
+            sys.modules[pkg_name] = types.ModuleType(pkg_name)
+
+    # Load losses.py first (dependency of sam2.py)
+    losses_module = _load_module_directly(
+        "projects.samtok.models.losses",
+        os.path.join(models_dir, "losses.py"),
+    )
+
+    # Load sam2.py
+    sam2_module = _load_module_directly(
+        "projects.samtok.models.sam2",
+        os.path.join(models_dir, "sam2.py"),
+    )
+
     VQ_SAM2 = sam2_module.VQ_SAM2
     VQ_SAM2Config = sam2_module.VQ_SAM2Config
     SAM2Config = sam2_module.SAM2Config
