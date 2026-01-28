@@ -124,14 +124,33 @@ def load_processor(model_path: str) -> AutoProcessor:
         raise last_exc
 
 
+class DirectResize:
+    def __init__(self, target_length: int) -> None:
+        self.target_length = target_length
+
+    def apply_image(self, image: np.ndarray) -> np.ndarray:
+        """
+        Expects a numpy array with shape HxWxC in uint8 format.
+        """
+        if not isinstance(image, np.ndarray):
+            raise TypeError("DirectResize expects a numpy array input.")
+        pil_image = Image.fromarray(image).convert("RGB")
+        resized = pil_image.resize((self.target_length, self.target_length))
+        return np.array(resized)
+
+
 def build_samtok(model_path: str, device: torch.device):
     samtok_path = ensure_samtok_imports()
     if not samtok_path:
         raise RuntimeError(
-            "Sa2VA repo not found. Set SAMTOK_SA2VA_PATH to the Sa2VA repository root."
+            "Sa2VA repo not found.\n"
+            "- Clone it: `git clone https://github.com/bytedance/Sa2VA.git`\n"
+            "- Then either:\n"
+            "  - export SAMTOK_SA2VA_PATH=/path/to/Sa2VA\n"
+            "  - or place the clone at `../Sa2VA` relative to this benchmark repo.\n"
         )
 
-    from projects.samtok.models import DirectResize, VQ_SAM2, VQ_SAM2Config, SAM2Config
+    from projects.samtok.models.sam2 import VQ_SAM2, VQ_SAM2Config, SAM2Config
 
     sam2_ckpt = resolve_asset(model_path, "sam2.1_hiera_large.pt")
     tokenizer_ckpt = resolve_asset(model_path, "mask_tokenizer_256x2.pth")
