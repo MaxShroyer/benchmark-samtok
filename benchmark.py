@@ -6,28 +6,44 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-from datasets import load_dataset
+from datasets import get_dataset_split_names, load_dataset
 from dotenv import load_dotenv
 from huggingface_hub import hf_hub_download
 from PIL import Image
 from tqdm import tqdm
 from transformers import AutoProcessor
 
-from config import CODEBOOK_DEPTH, CODEBOOK_SIZE, DATASET_NAME, DATASET_SPLIT, PROMPT_TEMPLATE
+from config import (
+    CODEBOOK_DEPTH,
+    CODEBOOK_SIZE,
+    DATASET_DEFAULT_SPLITS,
+    DATASET_NAME,
+    DATASET_SPLIT,
+    PROMPT_TEMPLATE,
+    SAM2_IMAGE_SIZE,
+)
 from samtok_imports import ensure_samtok_imports
 from utils.mask_utils import decode_rle
-from utils.metrics import MetricTracker, compute_sample_metrics
+from utils.metrics import MetricTracker, compute_sample_metrics, compute_set_metrics
 from utils.token_utils import parse_quant_codes
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark SAMTok on RefCOCO-M")
     parser.add_argument("--model", required=True, help="Hugging Face model path")
-    parser.add_argument("--dataset", default=DATASET_NAME)
-    parser.add_argument("--split", default=DATASET_SPLIT)
+    parser.add_argument(
+        "--dataset",
+        default=DATASET_NAME,
+        help="Dataset name or a comma-separated list for comparison",
+    )
+    parser.add_argument(
+        "--split",
+        default=None,
+        help="Dataset split or comma-separated list (optional)",
+    )
     parser.add_argument("--max-samples", type=int, default=0, help="Limit total expressions")
     parser.add_argument("--output-dir", default="results")
-    parser.add_argument("--max-new-tokens", type=int, default=128)
+    parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--save-per-sample", action="store_true")
     return parser.parse_args()
 
@@ -85,13 +101,51 @@ def build_samtok(model_path: str, device: torch.device):
     vq_sam2 = VQ_SAM2(vq_sam2_config).to(device).eval()
     state = torch.load(tokenizer_ckpt, map_location="cpu")
     vq_sam2.load_state_dict(state)
-    sam2_image_processor = DirectResize(1024)
+    sam2_image_processor = DirectResize(SAM2_IMAGE_SIZE)
 
     return vq_sam2, sam2_image_processor
 
 
 def build_prompt(expression: str) -> str:
     return PROMPT_TEMPLATE.format(referring_expression=expression)
+
+
+def normalize_split_name(name: str) -> str:
+    return name.strip().lower().replace("-", "").replace("_", "")
+
+
+def resolve_split_candidates(dataset_name: str, token: str | None) -> List[str]:
+    try:
+        return get_dataset_split_names(dataset_name, token=token)
+    except Exception:
+        return []
+
+
+def resolve_splits(dataset_name: str, split_arg: str | None, token: str | None) -> List[str]:
+    requested = split_arg or DATASET_DEFAULT_SPLITS.get(dataset_name) or DATASET_SPLIT
+    splits = [chunk.strip() for chunk in requested.split(",") if chunk.strip()]
+
+    split_aliases = {}
+    if dataset_name == "lmms-lab/RefCOCOplus":
+        split_aliases = {
+            "val": "validation",
+            "valid": "validation",
+            "testa": "testA",
+            "testb": "testB",
+        }
+
+    available = resolve_split_candidates(dataset_name, token)
+    normalized_available = {normalize_split_name(name): name for name in available}
+
+    resolved = []
+    for split in splits:
+        normalized = normalize_split_name(split)
+        mapped = split_aliases.get(normalized, split)
+        if normalized_available:
+            mapped_normalized = normalize_split_name(mapped)
+            mapped = normalized_available.get(mapped_normalized, mapped)
+        resolved.append(mapped)
+    return resolved
 
 
 def resolve_hf_token(dataset_name: str) -> str | None:
@@ -126,7 +180,42 @@ def iter_expressions(sample: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]
 
 
 @torch.no_grad()
-def predict_mask(
+def select_primary_mask(pred_masks: List[np.ndarray]) -> np.ndarray | None:
+    if not pred_masks:
+        return None
+    for mask in pred_masks:
+        if mask is not None and mask.any():
+            return mask
+    return pred_masks[0]
+
+
+def decode_masks_from_codes(
+    vq_sam2: torch.nn.Module,
+    sam2_image_processor,
+    image: Image.Image,
+    codes_list: List[List[int]],
+) -> List[np.ndarray]:
+    if not codes_list:
+        return []
+
+    sam2_image = np.array(image)
+    sam2_image = sam2_image_processor.apply_image(sam2_image)
+    sam2_pixel_values = torch.from_numpy(sam2_image).permute(2, 0, 1).contiguous()
+    sam2_pixel_values = sam2_pixel_values.unsqueeze(0).to(vq_sam2.dtype).to(vq_sam2.device)
+    sam2_pixel_values = sam2_pixel_values.repeat(len(codes_list), 1, 1, 1)
+
+    quant_ids = torch.LongTensor(codes_list).to(vq_sam2.device)
+
+    pred_masks = vq_sam2.forward_with_codes(sam2_pixel_values, quant_ids)
+    pred_masks = pred_masks.float()
+    pred_masks = F.interpolate(
+        pred_masks, size=image.size[::-1], mode="bilinear", align_corners=False
+    )
+    pred_masks = (pred_masks > 0.5).cpu().numpy().astype(np.uint8)
+    return [pred_masks[idx, 0] for idx in range(pred_masks.shape[0])]
+
+
+def predict_masks(
     model: torch.nn.Module,
     processor: AutoProcessor,
     vq_sam2: torch.nn.Module,
@@ -134,7 +223,7 @@ def predict_mask(
     image: Image.Image,
     prompt: str,
     max_new_tokens: int,
-) -> np.ndarray:
+) -> List[np.ndarray]:
     messages = [
         {
             "role": "user",
@@ -168,33 +257,22 @@ def predict_mask(
 
     quant_codes = parse_quant_codes(output_text, CODEBOOK_SIZE, CODEBOOK_DEPTH)
     if not quant_codes:
-        return None
+        return []
 
-    codes = quant_codes[0][:CODEBOOK_DEPTH]
-    normalized = []
-    for code in codes:
-        if 0 <= code < CODEBOOK_SIZE:
-            normalized.append(code)
-        else:
-            normalized.append(-1)
+    normalized_codes = []
+    for codes in quant_codes:
+        codes = codes[:CODEBOOK_DEPTH]
+        normalized = []
+        for code in codes:
+            if 0 <= code < CODEBOOK_SIZE:
+                normalized.append(code)
+            else:
+                normalized.append(-1)
+        if all(code == -1 for code in normalized):
+            continue
+        normalized_codes.append(normalized)
 
-    if all(code == -1 for code in normalized):
-        return None
-
-    sam2_image = np.array(image)
-    sam2_image = sam2_image_processor.apply_image(sam2_image)
-    sam2_pixel_values = torch.from_numpy(sam2_image).permute(2, 0, 1).contiguous()
-    sam2_pixel_values = sam2_pixel_values.unsqueeze(0).to(vq_sam2.dtype).to(vq_sam2.device)
-
-    quant_ids = torch.LongTensor(normalized).unsqueeze(0).to(vq_sam2.device)
-
-    pred_masks = vq_sam2.forward_with_codes(sam2_pixel_values, quant_ids)
-    pred_masks = pred_masks.float()
-    pred_masks = F.interpolate(
-        pred_masks, size=image.size[::-1], mode="bilinear", align_corners=False
-    )
-    pred_masks = (pred_masks > 0.5).cpu().numpy().astype(np.uint8)
-    return pred_masks[0, 0]
+    return decode_masks_from_codes(vq_sam2, sam2_image_processor, image, normalized_codes)
 
 
 def main() -> None:
@@ -206,67 +284,94 @@ def main() -> None:
     processor = AutoProcessor.from_pretrained(args.model)
     vq_sam2, sam2_image_processor = build_samtok(args.model, model.device)
 
-    hf_token = resolve_hf_token(args.dataset)
-    dataset = load_dataset(args.dataset, split=args.split, token=hf_token)
-    tracker = MetricTracker()
-    per_sample_results = []
+    dataset_names = [name.strip() for name in args.dataset.split(",") if name.strip()]
+    results = []
 
-    total_expr = 0
-    for sample in tqdm(dataset, desc="Evaluating"):
-        image = sample["image"]
-        if not isinstance(image, Image.Image):
-            image = Image.open(image).convert("RGB")
-        width, height = image.size
+    for dataset_name in dataset_names:
+        hf_token = resolve_hf_token(dataset_name)
+        splits = resolve_splits(dataset_name, args.split, hf_token)
 
-        for expression, inst in iter_expressions(sample):
-            if args.max_samples and total_expr >= args.max_samples:
-                break
+        for split in splits:
+            dataset = load_dataset(dataset_name, split=split, token=hf_token)
+            tracker = MetricTracker()
+            per_sample_results = []
 
-            prompt = build_prompt(expression)
-            pred_mask = predict_mask(
-                model,
-                processor,
-                vq_sam2,
-                sam2_image_processor,
-                image,
-                prompt,
-                args.max_new_tokens,
+            total_expr = 0
+            for sample in tqdm(dataset, desc=f"Evaluating {dataset_name}:{split}"):
+                image = sample["image"]
+                if not isinstance(image, Image.Image):
+                    image = Image.open(image).convert("RGB")
+                width, height = image.size
+
+                for expression, inst in iter_expressions(sample):
+                    if args.max_samples and total_expr >= args.max_samples:
+                        break
+
+                    prompt = build_prompt(expression)
+                    pred_masks = predict_masks(
+                        model,
+                        processor,
+                        vq_sam2,
+                        sam2_image_processor,
+                        image,
+                        prompt,
+                        args.max_new_tokens,
+                    )
+
+                    gt_mask = decode_rle(inst.get("mask"), height, width)
+                    primary_mask = select_primary_mask(pred_masks)
+                    if primary_mask is None:
+                        primary_mask = np.zeros_like(gt_mask)
+                        pred_masks = []
+
+                    sample_metrics = compute_sample_metrics(primary_mask, gt_mask)
+                    set_metrics = compute_set_metrics(pred_masks, gt_mask)
+                    sample_metrics.update(set_metrics)
+                    tracker.update(sample_metrics)
+
+                    if args.save_per_sample:
+                        per_sample_results.append(
+                            {
+                                "image_id": sample.get("image_id"),
+                                "expression": expression,
+                                "metrics": {
+                                    "iou": sample_metrics["iou"],
+                                    "precision": sample_metrics["precision"],
+                                    "recall": sample_metrics["recall"],
+                                    "f1": sample_metrics["f1"],
+                                    "gIoU": sample_metrics["gIoU"],
+                                    "cIoU": sample_metrics["cIoU"],
+                                    "n_acc": sample_metrics["n_acc"],
+                                    "pred_count": sample_metrics["pred_count"],
+                                    "gt_count": sample_metrics["gt_count"],
+                                },
+                            }
+                        )
+
+                    total_expr += 1
+                if args.max_samples and total_expr >= args.max_samples:
+                    break
+
+            results.append(
+                {
+                    "model": args.model,
+                    "dataset": dataset_name,
+                    "split": split,
+                    "metrics": tracker.summary(),
+                    "per_sample_results": per_sample_results if args.save_per_sample else None,
+                }
             )
 
-            gt_mask = decode_rle(inst.get("mask"), height, width)
-            if pred_mask is None:
-                pred_mask = np.zeros_like(gt_mask)
-
-            sample_metrics = compute_sample_metrics(pred_mask, gt_mask)
-            tracker.update(sample_metrics)
-
-            if args.save_per_sample:
-                per_sample_results.append(
-                    {
-                        "image_id": sample.get("image_id"),
-                        "expression": expression,
-                        "metrics": {
-                            "iou": sample_metrics["iou"],
-                            "precision": sample_metrics["precision"],
-                            "recall": sample_metrics["recall"],
-                            "f1": sample_metrics["f1"],
-                        },
-                    }
-                )
-
-            total_expr += 1
-        if args.max_samples and total_expr >= args.max_samples:
-            break
-
     os.makedirs(args.output_dir, exist_ok=True)
-    output = {
-        "model": args.model,
-        "dataset": args.dataset,
-        "split": args.split,
-        "metrics": tracker.summary(),
-    }
-    if args.save_per_sample:
-        output["per_sample_results"] = per_sample_results
+    if len(results) == 1:
+        output = results[0]
+        if not args.save_per_sample:
+            output.pop("per_sample_results", None)
+    else:
+        if not args.save_per_sample:
+            for result in results:
+                result.pop("per_sample_results", None)
+        output = {"model": args.model, "runs": results}
 
     output_path = os.path.join(
         args.output_dir, args.model.replace("/", "_") + ".json"

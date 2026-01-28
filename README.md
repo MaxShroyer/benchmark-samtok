@@ -1,6 +1,7 @@
 # SAMTok RefCOCO-M Benchmark
 
-Benchmark five SAMTok variants on the RefCOCO-M dataset, reporting mIoU, precision, recall, and F1.
+Benchmark SAMTok variants on RefCOCO-style datasets, reporting mIoU, precision, recall, F1,
+plus gIoU/cIoU/N-acc for comparison with paper metrics.
 
 ## Setup
 
@@ -27,6 +28,8 @@ Options:
 - `--max-samples N` to limit the number of expressions evaluated
 - `--save-per-sample` to store per-expression metrics
 - `--output-dir results` to change output location
+- `--dataset` accepts comma-separated dataset names for comparison
+- `--split` accepts comma-separated splits; if omitted, dataset defaults are used
 
 ## Run All Models (Parallel GPUs)
 
@@ -44,3 +47,17 @@ Each result JSON includes:
 - `metrics.precision`
 - `metrics.recall`
 - `metrics.f1`
+- `metrics.gIoU`
+- `metrics.cIoU`
+- `metrics.n_acc`
+
+## RefCOCO+ Comparison (Shared Dataset)
+
+Example comparison across two RefCOCO+ sources:
+
+```bash
+python benchmark.py \
+  --model zhouyik/Qwen3-VL-8B-SAMTok \
+  --dataset moondream/refcoco_plus_rle_val,lmms-lab/RefCOCOplus \
+  --split refcoco_plus_val,validation
+```

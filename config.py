@@ -39,10 +39,15 @@ MODELS: List[ModelConfig] = [
 
 DATASET_NAME = "moondream/refcoco-m"
 DATASET_SPLIT = "refcoco_val"
+DATASET_DEFAULT_SPLITS = {
+    "lmms-lab/RefCOCOplus": "validation",
+}
 
 PROMPT_TEMPLATE = (
-    "Please segment the object described by: \"{referring_expression}\". "
-    "Respond with the segmentation mask tokens."
+    "Segment the object described by: \"{referring_expression}\".\n"
+    "Respond ONLY with a single mask token sequence in the exact format:\n"
+    "<|mt_start|><|mt_0000|><|mt_0000|><|mt_end|>\n"
+    "Do not include any other text."
 )
 
 CODEBOOK_SIZE = 256

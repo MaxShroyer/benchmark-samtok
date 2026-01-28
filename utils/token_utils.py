@@ -38,7 +38,12 @@ def parse_quant_codes(
     quant_ids = extract_mt_token_ids_v1(text)
     if len(quant_ids) % codebook_depth != 0:
         fixed = fix_mt_format_comprehensive(text)
-        quant_ids = extract_mt_token_ids_v2(fixed)
+        quant_ids_v2 = extract_mt_token_ids_v2(fixed)
+        if quant_ids_v2:
+            quant_ids = quant_ids_v2
+        else:
+            usable = len(quant_ids) - (len(quant_ids) % codebook_depth)
+            quant_ids = quant_ids[:usable]
 
     if not quant_ids:
         return []
