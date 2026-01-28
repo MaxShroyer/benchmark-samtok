@@ -150,7 +150,16 @@ def build_samtok(model_path: str, device: torch.device):
             "  - or place the clone at `../Sa2VA` relative to this benchmark repo.\n"
         )
 
-    from projects.samtok.models.sam2 import VQ_SAM2, VQ_SAM2Config, SAM2Config
+    # Import directly from sam2.py to avoid the __init__.py which pulls in xtuner
+    import importlib.util
+
+    sam2_module_path = os.path.join(samtok_path, "projects", "samtok", "models", "sam2.py")
+    spec = importlib.util.spec_from_file_location("sam2_module", sam2_module_path)
+    sam2_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sam2_module)
+    VQ_SAM2 = sam2_module.VQ_SAM2
+    VQ_SAM2Config = sam2_module.VQ_SAM2Config
+    SAM2Config = sam2_module.SAM2Config
 
     sam2_ckpt = resolve_asset(model_path, "sam2.1_hiera_large.pt")
     tokenizer_ckpt = resolve_asset(model_path, "mask_tokenizer_256x2.pth")
