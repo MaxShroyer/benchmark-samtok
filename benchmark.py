@@ -1,4 +1,5 @@
 import argparse
+import io
 import json
 import os
 import sys
@@ -9,6 +10,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from datasets import get_dataset_split_names, load_dataset
+from datasets.exceptions import DatasetGenerationError
 from dotenv import load_dotenv
 from huggingface_hub import hf_hub_download
 from PIL import Image
@@ -287,6 +289,29 @@ def resolve_hf_token(dataset_name: str) -> str | None:
     return token
 
 
+def load_dataset_robust(dataset_name: str, split: str, token: str | None):
+    """
+    Load a dataset split, with a fallback for parquet schema mismatches.
+
+    Some HF-hosted parquet datasets can drift between the repo metadata schema and
+    the parquet files' actual Arrow schema, causing `download_and_prepare()` to
+    fail with a cast error. In those cases, streaming mode often succeeds because
+    it avoids the prepare step.
+    """
+    try:
+        return load_dataset(dataset_name, split=split, token=token)
+    except DatasetGenerationError as exc:
+        msg = str(exc)
+        if "Couldn't cast array of type" not in msg:
+            raise
+
+        print(
+            f"Warning: failed to build {dataset_name}:{split} due to a parquet schema mismatch. "
+            "Retrying in streaming mode."
+        )
+        return load_dataset(dataset_name, split=split, token=token, streaming=True)
+
+
 def iter_expressions(sample: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
     samples = sample.get("samples", [])
     output = []
@@ -412,7 +437,7 @@ def main() -> None:
         splits = resolve_splits(dataset_name, args.split, hf_token)
 
         for split in splits:
-            dataset = load_dataset(dataset_name, split=split, token=hf_token)
+            dataset = load_dataset_robust(dataset_name, split=split, token=hf_token)
             tracker = MetricTracker()
             per_sample_results = []
 
@@ -420,7 +445,16 @@ def main() -> None:
             for sample in tqdm(dataset, desc=f"Evaluating {dataset_name}:{split}"):
                 image = sample["image"]
                 if not isinstance(image, Image.Image):
-                    image = Image.open(image).convert("RGB")
+                    if isinstance(image, dict):
+                        if image.get("path"):
+                            image = Image.open(image["path"])
+                        elif image.get("bytes"):
+                            image = Image.open(io.BytesIO(image["bytes"]))
+                        else:
+                            raise TypeError(f"Unsupported image dict format: keys={list(image.keys())}")
+                    else:
+                        image = Image.open(image)
+                    image = image.convert("RGB")
                 width, height = image.size
 
                 for expression, inst in iter_expressions(sample):
