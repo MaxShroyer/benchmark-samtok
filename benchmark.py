@@ -76,6 +76,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="results")
     parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--save-per-sample", action="store_true")
+    parser.add_argument(
+        "--running-metrics-every",
+        type=int,
+        default=0,
+        help="Print running aggregate metrics every N expressions (0 disables).",
+    )
     parser.add_argument("--no-wandb", action="store_true", help="Disable Weights & Biases logging")
     parser.add_argument("--wandb-project", default="samtok-benchmark")
     parser.add_argument("--wandb-entity", default=None)
@@ -899,6 +905,33 @@ def main() -> None:
                         )
 
                     total_expr += 1
+                    if args.running_metrics_every and (total_expr % args.running_metrics_every == 0):
+                        summary = tracker.summary()
+                        ordered_keys = [
+                            "mIoU",
+                            "precision",
+                            "recall",
+                            "f1",
+                            "box_iou",
+                            "box_giou",
+                            "box_ciou",
+                            "gIoU",
+                            "cIoU",
+                            "union_iou",
+                            "best_match_iou",
+                            "n_acc",
+                            "count",
+                        ]
+                        parts = []
+                        for key in ordered_keys:
+                            value = summary.get(key, 0.0)
+                            if key == "count":
+                                parts.append(f"{key}={int(value)}")
+                            else:
+                                parts.append(f"{key}={float(value):.4f}")
+                        tqdm.write(
+                            f"[running {dataset_name}:{split}] expr_step={total_expr} " + " ".join(parts)
+                        )
                     if wandb_run is not None and args.wandb_log_every > 0:
                         if total_expr % args.wandb_log_every == 0:
                             throughput = total_expr / max(time.perf_counter() - run_start, 1e-6)
