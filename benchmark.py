@@ -460,14 +460,71 @@ def load_dataset_robust(dataset_name: str, split: str, token: str | None):
 
 
 def iter_expressions(sample: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
-    samples = sample.get("samples", [])
-    output = []
-    for inst in samples:
-        sentences = inst.get("sentences") or inst.get("sentence")
+    def resolve_text(payload: Any) -> str | None:
+        if isinstance(payload, str):
+            return payload
+        if isinstance(payload, dict):
+            for key in ("sent", "sentence", "text", "expression", "expr", "caption", "query"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+        return None
+
+    def ensure_mask(inst: Dict[str, Any], fallback: Dict[str, Any]) -> Dict[str, Any]:
+        if inst.get("mask") is not None:
+            return inst
+        for key in ("mask", "segmentation", "segmentation_rle", "rle"):
+            value = inst.get(key)
+            if value is None:
+                value = fallback.get(key)
+            if value is not None:
+                merged = dict(inst)
+                merged["mask"] = value
+                return merged
+        return inst
+
+    def collect_from_container(container: Dict[str, Any], fallback: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
+        entries: List[Tuple[str, Dict[str, Any]]] = []
+        sentences = (
+            container.get("sentences")
+            or container.get("sentence")
+            or container.get("expressions")
+            or container.get("expression")
+            or container.get("refexp")
+        )
         if isinstance(sentences, str):
-            sentences = [sentences]
-        for sentence in sentences or []:
-            output.append((sentence, inst))
+            entries.append((sentences, ensure_mask(container, fallback)))
+            return entries
+        if isinstance(sentences, list):
+            for item in sentences:
+                if isinstance(item, str):
+                    entries.append((item, ensure_mask(container, fallback)))
+                    continue
+                text = resolve_text(item)
+                if text is None:
+                    continue
+                inst = ensure_mask({**container, **item} if isinstance(item, dict) else container, fallback)
+                entries.append((text, inst))
+        return entries
+
+    output: List[Tuple[str, Dict[str, Any]]] = []
+    samples = sample.get("samples")
+    if isinstance(samples, list) and samples:
+        for inst in samples:
+            if isinstance(inst, dict):
+                output.extend(collect_from_container(inst, inst))
+        return output
+
+    output.extend(collect_from_container(sample, sample))
+
+    refs = sample.get("refs") or sample.get("ref")
+    if isinstance(refs, dict):
+        output.extend(collect_from_container(refs, refs))
+    elif isinstance(refs, list):
+        for ref in refs:
+            if isinstance(ref, dict):
+                output.extend(collect_from_container(ref, ref))
+
     return output
 
 

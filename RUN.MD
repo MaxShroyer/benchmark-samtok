@@ -34,13 +34,40 @@ python benchmark.py \
   --model zhouyik/Qwen3-VL-8B-SAMTok \
   --dataset moondream/lvis_segmentation,lmms-lab/RefCOCOplus
 
+----
+Running 
 python benchmark.py \
   --model zhouyik/Qwen3-VL-8B-SAMTok \
-  --dataset moondream/refcoco-m,lmms-lab/RefCOCOplus
+  --dataset moondream/refcoco_plus_rle_val
+
+python benchmark.py \
+  --model zhouyik/Qwen3-VL-4B-SAMTok \
+  --dataset moondream/refcoco_plus_rle_val
 
 
+---
+running 
+python benchmark.py \
+  --model zhouyik/Qwen3-VL-8B-SAMTok \
+  --dataset moondream/refcoco-m
+
+python benchmark.py \
+  --model zhouyik/Qwen3-VL-4B-SAMTok \
+  --dataset moondream/refcoco-m
 
 
+-----
+
+python benchmark.py \
+  --model zhouyik/Qwen3-VL-8B-SAMTok \
+  --dataset moondream/refcoco_rle
+
+python benchmark.py \
+  --model zhouyik/Qwen3-VL-4B-SAMTok \
+  --dataset moondream/refcoco_rle
+
+-----
+brokern
   python benchmark.py \
   --model zhouyik/Qwen3-VL-8B-SAMTok \
   --dataset moondream/lvis_segmentation,lmms-lab/RefCOCOplus
@@ -48,3 +75,15 @@ python benchmark.py \
   python benchmark.py \
   --model zhouyik/Qwen3-VL-4B-SAMTok \
   --dataset moondream/lvis_segmentation,lmms-lab/RefCOCOplus
+
+
+  
+-----
+
+  python benchmark.py \
+  --model zhouyik/Qwen3-VL-8B-SAMTok \
+  --dataset lmms-lab/RefCOCOplus
+
+  python benchmark.py \
+  --model zhouyik/Qwen3-VL-4B-SAMTok \
+  --dataset lmms-lab/RefCOCOplus
