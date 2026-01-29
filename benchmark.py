@@ -117,16 +117,26 @@ def load_vlm(model_path: str) -> torch.nn.Module:
         return model
 
     try:
-        from transformers import AutoModelForCausalLM
+        from transformers import AutoModelForCausalLM, AutoModel
     except ImportError as exc:  # pragma: no cover - environment specific
         raise RuntimeError(
-            "Loaded a model without `generate`, and AutoModelForCausalLM "
-            "is unavailable. Please upgrade transformers."
+            "Loaded a model without `generate`, and auto model classes "
+            "are unavailable. Please upgrade transformers."
         ) from exc
 
-    fallback_model = AutoModelForCausalLM.from_pretrained(
-        model_path, torch_dtype="auto", trust_remote_code=model_kwargs.get("trust_remote_code", False)
-    )
+    fallback_model: torch.nn.Module
+    try:
+        fallback_model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype="auto",
+            trust_remote_code=model_kwargs.get("trust_remote_code", False),
+        )
+    except ValueError:
+        fallback_model = AutoModel.from_pretrained(
+            model_path,
+            torch_dtype="auto",
+            trust_remote_code=model_kwargs.get("trust_remote_code", False),
+        )
     if not hasattr(fallback_model, "generate"):
         raise RuntimeError(
             "Model backend does not provide `generate`. Install a compatible "
