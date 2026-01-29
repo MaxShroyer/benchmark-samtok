@@ -87,6 +87,7 @@ def load_vlm(model_path: str) -> torch.nn.Module:
             "Install with `pip install -U \"transformers>=4.49.0,<5.0.0\"`."
         ) from exc
 
+    auto_image_text_to_text = getattr(transformers, "AutoModelForImageTextToText", None)
     auto_vision2seq = getattr(transformers, "AutoModelForVision2Seq", None)
 
     if "qwen3" in model_path.lower():
@@ -100,7 +101,29 @@ def load_vlm(model_path: str) -> torch.nn.Module:
 
             model_cls = Qwen2_5VLForConditionalGeneration
         except Exception as exc:
-            _debug(f"Qwen2_5VLForConditionalGeneration import failed: {type(exc).__name__}: {exc}")
+            _debug(
+                f"Qwen2_5VLForConditionalGeneration import failed: {type(exc).__name__}: {exc}"
+            )
+            # Some transformers builds expose the class as Qwen2_5_VLForConditionalGeneration.
+            try:
+                from transformers import Qwen2_5_VLForConditionalGeneration  # type: ignore
+
+                model_cls = Qwen2_5_VLForConditionalGeneration
+            except Exception as exc2:
+                _debug(
+                    f"Qwen2_5_VLForConditionalGeneration import failed: {type(exc2).__name__}: {exc2}"
+                )
+                try:
+                    from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (  # type: ignore
+                        Qwen2_5_VLForConditionalGeneration,
+                    )
+
+                    model_cls = Qwen2_5_VLForConditionalGeneration
+                except Exception as exc3:
+                    _debug(
+                        "Direct import from transformers.models.qwen2_5_vl failed: "
+                        f"{type(exc3).__name__}: {exc3}"
+                    )
     else:
         raise ValueError(f"Unknown model family for {model_path}")
 
@@ -146,7 +169,10 @@ def load_vlm(model_path: str) -> torch.nn.Module:
             continue
 
     candidates: list[type] = []
-    if auto_vision2seq is not None:
+    # Prefer the modern auto class when available (replaces AutoModelForVision2Seq).
+    if auto_image_text_to_text is not None:
+        candidates.append(auto_image_text_to_text)
+    elif auto_vision2seq is not None:
         candidates.append(auto_vision2seq)
     if model_cls is not None:
         candidates.append(model_cls)
@@ -170,12 +196,11 @@ def load_vlm(model_path: str) -> torch.nn.Module:
                 )
                 if has_gen:
                     return fallback_model
+                # Keep the most recent successfully loaded model as a patch candidate.
+                last_model = fallback_model
 
     # Last resort: some Qwen repos load a model class that doesn't inherit GenerationMixin
     # even though its forward signature supports generation. Try injecting the mixin.
-    last_model = None
-    for use_remote in trust_order:
-        last_model = try_load(AutoModel, use_remote) or last_model
     if last_model is not None and not hasattr(last_model, "generate"):
         try:
             from transformers.generation.utils import GenerationMixin
@@ -200,9 +225,12 @@ def load_vlm(model_path: str) -> torch.nn.Module:
         "Could not load a model with `.generate`.\n"
         f"- transformers={getattr(transformers, '__version__', 'unknown')}\n"
         f"- config.architectures={getattr(cfg, 'architectures', None) if cfg is not None else None}\n"
+        "Debug:\n"
+        "- Re-run with `SAMTOK_DEBUG_MODEL=1` to print loader attempts.\n"
         "Fix:\n"
-        "- Upgrade transformers: `pip install -U \"transformers>=4.49.0,<5.0.0\"`\n"
-        "- If you installed a vendor/forked transformers build, switch to the official PyPI wheel."
+        "- Install official Transformers: `pip install -U \"transformers>=4.49.0,<5.0.0\"`\n"
+        "- If your `transformers.__version__` looks unusual, uninstall/reinstall:\n"
+        "  `pip uninstall -y transformers && pip install -U \"transformers>=4.49.0,<5.0.0\"`"
     )
 
 
