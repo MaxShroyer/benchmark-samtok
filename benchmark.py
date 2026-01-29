@@ -71,66 +71,38 @@ def resolve_asset(model_path: str, filename: str) -> str:
 def load_vlm(model_path: str) -> torch.nn.Module:
     model_kwargs: Dict[str, Any] = {"torch_dtype": "auto"}
 
-    if "qwen3" in model_path.lower():
-        from transformers import Qwen3VLForConditionalGeneration
+    debug = os.getenv("SAMTOK_DEBUG_MODEL", "").strip().lower() in {"1", "true", "yes", "y"}
 
-        model_cls = Qwen3VLForConditionalGeneration
-    elif "qwen2.5" in model_path.lower() or "qwen25" in model_path.lower():
-        try:
-            from transformers import Qwen2_5VLForConditionalGeneration
-        except ImportError as exc:
-            try:
-                from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (  # type: ignore
-                    Qwen2_5VLForConditionalGeneration,
-                )
-            except ImportError:
-                try:
-                    import transformers
-
-                    auto_causal = getattr(transformers, "AutoModelForCausalLM", None)
-                    auto_model = getattr(transformers, "AutoModel", None)
-                    if auto_causal is None and auto_model is None:
-                        raise ImportError(
-                            "AutoModelForCausalLM not available in transformers."
-                        )
-                except Exception as inner_exc:
-                    raise ImportError(
-                        "Qwen2.5-VL model class not found and auto model fallback "
-                        "is unavailable in this transformers build. "
-                        "Please install a standard transformers wheel (e.g. "
-                        "`pip install -U \"transformers>=4.49.0,<5.0.0\"`)."
-                    ) from inner_exc
-
-                try:
-                    return auto_causal.from_pretrained(
-                        model_path, torch_dtype="auto", trust_remote_code=True
-                    )
-                except Exception:
-                    if auto_model is None:
-                        raise
-                    return auto_model.from_pretrained(
-                        model_path, torch_dtype="auto", trust_remote_code=True
-                    )
-
-        model_cls = Qwen2_5VLForConditionalGeneration
-    else:
-        raise ValueError(f"Unknown model family for {model_path}")
+    def _debug(msg: str) -> None:
+        if debug:
+            # Use stdout + flush so it shows up even with progress bars.
+            print(f"[samtok-benchmark] {msg}", flush=True)
 
     try:
         import transformers
         from transformers import AutoConfig, AutoModel, AutoModelForCausalLM
     except ImportError as exc:  # pragma: no cover - environment specific
         raise RuntimeError(
-            "Loaded a model without `generate`, and auto model classes "
-            "are unavailable. Please upgrade transformers."
+            "transformers is required for model loading. "
+            "Install with `pip install -U \"transformers>=4.49.0,<5.0.0\"`."
         ) from exc
+
     auto_vision2seq = getattr(transformers, "AutoModelForVision2Seq", None)
 
-    debug = os.getenv("SAMTOK_DEBUG_MODEL", "").strip().lower() in {"1", "true", "yes", "y"}
+    if "qwen3" in model_path.lower():
+        from transformers import Qwen3VLForConditionalGeneration
 
-    def _debug(msg: str) -> None:
-        if debug:
-            print(f"[samtok-benchmark] {msg}", file=sys.stderr)
+        model_cls = Qwen3VLForConditionalGeneration
+    elif "qwen2.5" in model_path.lower() or "qwen25" in model_path.lower():
+        model_cls = None
+        try:
+            from transformers import Qwen2_5VLForConditionalGeneration
+
+            model_cls = Qwen2_5VLForConditionalGeneration
+        except Exception as exc:
+            _debug(f"Qwen2_5VLForConditionalGeneration import failed: {type(exc).__name__}: {exc}")
+    else:
+        raise ValueError(f"Unknown model family for {model_path}")
 
     def try_load(cls, trust_remote_code: bool) -> torch.nn.Module | None:
         try:
@@ -159,7 +131,7 @@ def load_vlm(model_path: str) -> torch.nn.Module:
     trust_order = [False, True] if is_qwen else [False]
 
     # Grab config early so debug output can show the declared architectures.
-    cfg = None
+    cfg: Any | None = None
     for use_remote in trust_order:
         try:
             cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=use_remote)
@@ -176,7 +148,8 @@ def load_vlm(model_path: str) -> torch.nn.Module:
     candidates: list[type] = []
     if auto_vision2seq is not None:
         candidates.append(auto_vision2seq)
-    candidates.append(model_cls)
+    if model_cls is not None:
+        candidates.append(model_cls)
     candidates.append(AutoModelForCausalLM)
     candidates.append(AutoModel)
 
@@ -198,9 +171,38 @@ def load_vlm(model_path: str) -> torch.nn.Module:
                 if has_gen:
                     return fallback_model
 
+    # Last resort: some Qwen repos load a model class that doesn't inherit GenerationMixin
+    # even though its forward signature supports generation. Try injecting the mixin.
+    last_model = None
+    for use_remote in trust_order:
+        last_model = try_load(AutoModel, use_remote) or last_model
+    if last_model is not None and not hasattr(last_model, "generate"):
+        try:
+            from transformers.generation.utils import GenerationMixin
+
+            patched_cls = type(
+                f"{last_model.__class__.__name__}WithGenerate",
+                (last_model.__class__, GenerationMixin),
+                {},
+            )
+            last_model.__class__ = patched_cls
+            _debug(
+                f"patched generate via GenerationMixin -> type={type(last_model).__name__} "
+                f"generate={hasattr(last_model, 'generate')}"
+            )
+        except Exception as exc:  # pragma: no cover - best effort
+            _debug(f"GenerationMixin patch failed: {type(exc).__name__}: {exc}")
+
+        if hasattr(last_model, "generate"):
+            return last_model
+
     raise RuntimeError(
-        "Model backend does not provide `generate`. Install a compatible "
-        "transformers build or use a Qwen* VL model class that supports generation."
+        "Could not load a model with `.generate`.\n"
+        f"- transformers={getattr(transformers, '__version__', 'unknown')}\n"
+        f"- config.architectures={getattr(cfg, 'architectures', None) if cfg is not None else None}\n"
+        "Fix:\n"
+        "- Upgrade transformers: `pip install -U \"transformers>=4.49.0,<5.0.0\"`\n"
+        "- If you installed a vendor/forked transformers build, switch to the official PyPI wheel."
     )
 
 
