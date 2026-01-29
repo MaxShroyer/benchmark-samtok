@@ -489,6 +489,8 @@ def predict_masks(
     prompt: str,
     max_new_tokens: int,
 ) -> List[np.ndarray]:
+    debug_decode = os.getenv("SAMTOK_DEBUG_DECODE", "").strip().lower() in {"1", "true", "yes", "y"}
+
     messages = [
         {
             "role": "user",
@@ -516,11 +518,30 @@ def predict_masks(
     generated_ids_trimmed = [
         out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
     ]
+    # Some Qwen tokenizers register the mask tokens (e.g. <|mt_0000|>) as "special",
+    # so `skip_special_tokens=True` can remove them entirely. That leads to empty
+    # quant codes and an all-zero prediction (all metrics become 0).
+    # Keep the existing behavior as the fast path, but fall back to decoding
+    # without skipping special tokens if we don't find any codes.
     output_text = processor.batch_decode(
         generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )[0]
 
     quant_codes = parse_quant_codes(output_text, CODEBOOK_SIZE, CODEBOOK_DEPTH)
+    if not quant_codes:
+        if debug_decode:
+            preview = output_text.replace("\n", "\\n")
+            print(f"[samtok-benchmark] decode(no-special) fallback; first decode preview: {preview[:300]}", flush=True)
+        output_text_full = processor.batch_decode(
+            generated_ids_trimmed, skip_special_tokens=False, clean_up_tokenization_spaces=False
+        )[0]
+        quant_codes = parse_quant_codes(output_text_full, CODEBOOK_SIZE, CODEBOOK_DEPTH)
+        if debug_decode:
+            preview_full = output_text_full.replace("\n", "\\n")
+            print(
+                f"[samtok-benchmark] decode(no-special) preview: {preview_full[:300]}",
+                flush=True,
+            )
     if not quant_codes:
         return []
 
