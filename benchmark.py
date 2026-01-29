@@ -118,10 +118,6 @@ def load_vlm(model_path: str) -> torch.nn.Module:
     else:
         raise ValueError(f"Unknown model family for {model_path}")
 
-    model = model_cls.from_pretrained(model_path, **model_kwargs)
-    if hasattr(model, "generate"):
-        return model
-
     try:
         import transformers
         from transformers import AutoModel, AutoModelForCausalLM
@@ -144,10 +140,14 @@ def load_vlm(model_path: str) -> torch.nn.Module:
 
     trust_remote_code = bool(model_kwargs.get("trust_remote_code", False))
     candidates: list[tuple[type, bool]] = []
+    # Prefer AutoModelForVision2Seq for Qwen VL variants when available.
     if auto_vision2seq is not None:
         candidates.append((auto_vision2seq, trust_remote_code))
         if trust_remote_code:
             candidates.append((auto_vision2seq, False))
+    candidates.append((model_cls, trust_remote_code))
+    if trust_remote_code:
+        candidates.append((model_cls, False))
     candidates.append((AutoModelForCausalLM, trust_remote_code))
     if trust_remote_code:
         candidates.append((AutoModelForCausalLM, False))
