@@ -473,6 +473,13 @@ def decode_masks_from_codes(
 
     pred_masks = vq_sam2.forward_with_codes(sam2_pixel_values, quant_ids)
     pred_masks = pred_masks.float()
+    # Some checkpoints return logits rather than probabilities.
+    # If values are outside [0, 1], apply sigmoid before thresholding.
+    with torch.no_grad():
+        pm_min = float(pred_masks.min().item())
+        pm_max = float(pred_masks.max().item())
+    if pm_min < 0.0 or pm_max > 1.0:
+        pred_masks = pred_masks.sigmoid()
     pred_masks = F.interpolate(
         pred_masks, size=image.size[::-1], mode="bilinear", align_corners=False
     )
@@ -490,6 +497,10 @@ def predict_masks(
     max_new_tokens: int,
 ) -> List[np.ndarray]:
     debug_decode = os.getenv("SAMTOK_DEBUG_DECODE", "").strip().lower() in {"1", "true", "yes", "y"}
+    debug_mask = os.getenv("SAMTOK_DEBUG_MASK", "").strip().lower() in {"1", "true", "yes", "y"}
+    # Lightweight per-process counter so debug prints don't spam full runs.
+    if not hasattr(predict_masks, "_debug_prints"):
+        setattr(predict_masks, "_debug_prints", 0)
 
     messages = [
         {
@@ -545,6 +556,12 @@ def predict_masks(
     if not quant_codes:
         return []
 
+    if (debug_decode or debug_mask) and getattr(predict_masks, "_debug_prints") < 3:
+        setattr(predict_masks, "_debug_prints", getattr(predict_masks, "_debug_prints") + 1)
+        preview = output_text.replace("\n", "\\n")
+        print(f"[samtok-benchmark] gen preview: {preview[:300]}", flush=True)
+        print(f"[samtok-benchmark] parsed quant_codes (first 5): {quant_codes[:5]}", flush=True)
+
     normalized_codes = []
     for codes in quant_codes:
         codes = codes[:CODEBOOK_DEPTH]
@@ -558,6 +575,9 @@ def predict_masks(
                 print(f"[samtok-benchmark] dropping invalid code seq: {codes}", flush=True)
             continue
         normalized_codes.append(list(codes))
+
+    if (debug_decode or debug_mask) and getattr(predict_masks, "_debug_prints") <= 3:
+        print(f"[samtok-benchmark] normalized_codes (first 5): {normalized_codes[:5]}", flush=True)
 
     return decode_masks_from_codes(vq_sam2, sam2_image_processor, image, normalized_codes)
 
