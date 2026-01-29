@@ -69,6 +69,10 @@ def resolve_asset(model_path: str, filename: str) -> str:
 
 
 def load_vlm(model_path: str) -> torch.nn.Module:
+    model_kwargs: Dict[str, Any] = {"torch_dtype": "auto"}
+    if "qwen" in model_path.lower():
+        model_kwargs["trust_remote_code"] = True
+
     if "qwen3" in model_path.lower():
         from transformers import Qwen3VLForConditionalGeneration
 
@@ -86,11 +90,11 @@ def load_vlm(model_path: str) -> torch.nn.Module:
                     import transformers
 
                     auto_cls = getattr(
-                        transformers, "AutoModelForConditionalGeneration", None
+                        transformers, "AutoModelForCausalLM", None
                     ) or getattr(transformers, "AutoModel", None)
                     if auto_cls is None:
                         raise ImportError(
-                            "AutoModelForConditionalGeneration not available in transformers."
+                            "AutoModelForCausalLM not available in transformers."
                         )
                 except Exception as inner_exc:
                     raise ImportError(
@@ -108,7 +112,27 @@ def load_vlm(model_path: str) -> torch.nn.Module:
     else:
         raise ValueError(f"Unknown model family for {model_path}")
 
-    return model_cls.from_pretrained(model_path, torch_dtype="auto")
+    model = model_cls.from_pretrained(model_path, **model_kwargs)
+    if hasattr(model, "generate"):
+        return model
+
+    try:
+        from transformers import AutoModelForCausalLM
+    except ImportError as exc:  # pragma: no cover - environment specific
+        raise RuntimeError(
+            "Loaded a model without `generate`, and AutoModelForCausalLM "
+            "is unavailable. Please upgrade transformers."
+        ) from exc
+
+    fallback_model = AutoModelForCausalLM.from_pretrained(
+        model_path, torch_dtype="auto", trust_remote_code=model_kwargs.get("trust_remote_code", False)
+    )
+    if not hasattr(fallback_model, "generate"):
+        raise RuntimeError(
+            "Model backend does not provide `generate`. Install a compatible "
+            "transformers build or use a Qwen* VL model class that supports generation."
+        )
+    return fallback_model
 
 
 def load_processor(model_path: str) -> AutoProcessor:
