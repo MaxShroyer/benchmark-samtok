@@ -1,120 +1,16 @@
 [
   {
     "meta": {
-      "id": "ljkbcg2y",
-      "name": "gentle-sea-11",
-      "state": "running",
-      "url": "https://wandb.ai/maxshroyer49-na/samtok-benchmark/runs/ljkbcg2y",
-      "created_at": "2026-01-29T02:08:10Z"
-    },
-    "config_compact": {
-      "model": "zhouyik/Qwen3-VL-8B-SAMTok",
-      "datasets": [
-        "moondream/refcoco-m",
-        "moondream/refcoco_rle",
-        "moondream/refcoco_plus_rle_val",
-        "moondream/lvis_segmentation",
-        "lmms-lab/RefCOCOplus"
-      ],
-      "split_arg": null,
-      "max_samples": 0,
-      "max_new_tokens": 256,
-      "save_per_sample": false
-    },
-    "processed_expr_step_max": 0,
-    "throughput_last_expr_s": null,
-    "sample_iou": {
-      "mean": null,
-      "p50": null,
-      "p90": null,
-      "p95": null
-    },
-    "sample_f1": {
-      "mean": null,
-      "p50": null,
-      "p90": null,
-      "p95": null
-    },
-    "predict_latency_s": {
-      "mean": null,
-      "p50": null,
-      "p90": null,
-      "p95": null
-    },
-    "expr_latency_s": {
-      "mean": null,
-      "p50": null,
-      "p90": null,
-      "p95": null
-    },
-    "dataset_split_counts": {},
-    "wandb_summary_keys": [
-      "_runtime",
-      "_step",
-      "_timestamp",
-      "_wandb",
-      "expr_step",
-      "perf/expr_latency_s",
-      "perf/predict_latency_s",
-      "perf/throughput_expr_s",
-      "sample/cIoU",
-      "sample/dataset",
-      "sample/expression",
-      "sample/f1",
-      "sample/gIoU",
-      "sample/gt_count",
-      "sample/image_id",
-      "sample/iou",
-      "sample/n_acc",
-      "sample/precision",
-      "sample/pred_count",
-      "sample/recall",
-      "sample/split",
-      "summary/cIoU",
-      "summary/count",
-      "summary/dataset",
-      "summary/f1",
-      "summary/gIoU",
-      "summary/mIoU",
-      "summary/n_acc",
-      "summary/precision",
-      "summary/recall",
-      "summary/split"
-    ],
-    "wandb_summary_selected": {
-      "summary/cIoU": 0.7109649528553494,
-      "summary/count": 5598,
-      "summary/dataset": "moondream/refcoco-m",
-      "summary/f1": 0.7396282296685235,
-      "summary/gIoU": 0.7109649528553494,
-      "summary/mIoU": 0.7109649528553494,
-      "summary/n_acc": 0.8208288674526617,
-      "summary/precision": 0.7605731418504927,
-      "summary/recall": 0.734023627155952,
-      "summary/split": "validation"
-    },
-    "downloaded_artifact_jsons": [],
-    "files": {
-      "history_csv": "wandb_reports/ljkbcg2y/history_sample_perf.csv",
-      "report_md": "wandb_reports/ljkbcg2y/report.md"
-    }
-  },
-  {
-    "meta": {
-      "id": "ux1urfnk",
-      "name": "glorious-vortex-12",
-      "state": "running",
-      "url": "https://wandb.ai/maxshroyer49-na/samtok-benchmark/runs/ux1urfnk",
-      "created_at": "2026-01-29T02:12:07Z"
+      "id": "bjmbx0cw",
+      "name": "magic-dragon-27",
+      "state": "finished",
+      "url": "https://wandb.ai/maxshroyer49-na/samtok-benchmark/runs/bjmbx0cw",
+      "created_at": "2026-01-29T04:05:59Z"
     },
     "config_compact": {
       "model": "zhouyik/Qwen3-VL-4B-SAMTok",
       "datasets": [
-        "moondream/refcoco-m",
-        "moondream/refcoco_rle",
-        "moondream/refcoco_plus_rle_val",
-        "moondream/lvis_segmentation",
-        "lmms-lab/RefCOCOplus"
+        "moondream/refcoco-m"
       ],
       "split_arg": null,
       "max_samples": 0,
@@ -130,6 +26,36 @@
       "p95": null
     },
     "sample_f1": {
+      "mean": null,
+      "p50": null,
+      "p90": null,
+      "p95": null
+    },
+    "sample_box_iou": {
+      "mean": null,
+      "p50": null,
+      "p90": null,
+      "p95": null
+    },
+    "sample_box_giou": {
+      "mean": null,
+      "p50": null,
+      "p90": null,
+      "p95": null
+    },
+    "sample_box_ciou": {
+      "mean": null,
+      "p50": null,
+      "p90": null,
+      "p95": null
+    },
+    "sample_union_iou": {
+      "mean": null,
+      "p50": null,
+      "p90": null,
+      "p95": null
+    },
+    "sample_best_match_iou": {
       "mean": null,
       "p50": null,
       "p90": null,
@@ -157,6 +83,10 @@
       "perf/expr_latency_s",
       "perf/predict_latency_s",
       "perf/throughput_expr_s",
+      "sample/best_match_iou",
+      "sample/box_ciou",
+      "sample/box_giou",
+      "sample/box_iou",
       "sample/cIoU",
       "sample/dataset",
       "sample/expression",
@@ -170,6 +100,11 @@
       "sample/pred_count",
       "sample/recall",
       "sample/split",
+      "sample/union_iou",
+      "summary/best_match_iou",
+      "summary/box_ciou",
+      "summary/box_giou",
+      "summary/box_iou",
       "summary/cIoU",
       "summary/count",
       "summary/dataset",
@@ -179,24 +114,32 @@
       "summary/n_acc",
       "summary/precision",
       "summary/recall",
-      "summary/split"
+      "summary/split",
+      "summary/union_iou"
     ],
     "wandb_summary_selected": {
-      "summary/cIoU": 0.6268458828341418,
+      "summary/best_match_iou": 0.6252245550182727,
+      "summary/box_ciou": 0.5542477438559964,
+      "summary/box_giou": 0.5439946289904466,
+      "summary/box_iou": 0.6421492376138834,
+      "summary/cIoU": 0.6054545318694373,
       "summary/count": 5598,
       "summary/dataset": "moondream/refcoco-m",
-      "summary/f1": 0.6557242131996223,
-      "summary/gIoU": 0.6268458828341418,
-      "summary/mIoU": 0.6268458828341418,
-      "summary/n_acc": 0.9841014648088604,
-      "summary/precision": 0.7005480290564317,
-      "summary/recall": 0.6462919735104425,
-      "summary/split": "validation"
+      "summary/f1": 0.6543179706252475,
+      "summary/gIoU": 0.5439946289904466,
+      "summary/mIoU": 0.6252245550182727,
+      "summary/n_acc": 0.9837441943551268,
+      "summary/precision": 0.6981747968304441,
+      "summary/recall": 0.6447376077168167,
+      "summary/split": "validation",
+      "summary/union_iou": 0.6252245550182727
     },
-    "downloaded_artifact_jsons": [],
+    "downloaded_artifact_jsons": [
+      "wandb_reports/bjmbx0cw/artifacts/benchmark-results_v5/zhouyik_Qwen3-VL-4B-SAMTok.json"
+    ],
     "files": {
-      "history_csv": "wandb_reports/ux1urfnk/history_sample_perf.csv",
-      "report_md": "wandb_reports/ux1urfnk/report.md"
+      "history_csv": "wandb_reports/bjmbx0cw/history_sample_perf.csv",
+      "report_md": "wandb_reports/bjmbx0cw/report.md"
     }
   }
 ]

@@ -508,6 +508,22 @@ def iter_expressions(sample: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]
         return entries
 
     output: List[Tuple[str, Dict[str, Any]]] = []
+
+    # lmms-lab/RefCOCOplus schema (lmms-eval formatted):
+    # - question: str (generic prompt)
+    # - answer: List[str] (referring expressions)
+    # - segmentation: polygon coords (COCO-style)
+    answers = sample.get("answer")
+    if isinstance(answers, str) and answers.strip():
+        answers = [answers]
+    if isinstance(answers, list) and any(isinstance(a, str) and a.strip() for a in answers):
+        inst = ensure_mask({"mask": sample.get("segmentation")}, sample)
+        for a in answers:
+            if isinstance(a, str) and a.strip():
+                output.append((a.strip(), inst))
+        if output:
+            return output
+
     samples = sample.get("samples")
     if isinstance(samples, list) and samples:
         for inst in samples:
