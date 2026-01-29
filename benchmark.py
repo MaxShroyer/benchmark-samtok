@@ -548,15 +548,16 @@ def predict_masks(
     normalized_codes = []
     for codes in quant_codes:
         codes = codes[:CODEBOOK_DEPTH]
-        normalized = []
-        for code in codes:
-            if 0 <= code < CODEBOOK_SIZE:
-                normalized.append(code)
-            else:
-                normalized.append(-1)
-        if all(code == -1 for code in normalized):
+        # Only pass fully-valid code sequences to SAM2.
+        # Partially-invalid sequences (e.g. caused by differing token numbering schemes)
+        # can lead to degenerate/empty masks; dropping them is safer than injecting -1s.
+        if len(codes) != CODEBOOK_DEPTH:
             continue
-        normalized_codes.append(normalized)
+        if not all(0 <= code < CODEBOOK_SIZE for code in codes):
+            if debug_decode:
+                print(f"[samtok-benchmark] dropping invalid code seq: {codes}", flush=True)
+            continue
+        normalized_codes.append(list(codes))
 
     return decode_masks_from_codes(vq_sam2, sam2_image_processor, image, normalized_codes)
 

@@ -52,8 +52,23 @@ def parse_quant_codes(
     remapped = []
     for bs_id in range(batch_size):
         chunk = quant_ids[bs_id * codebook_depth : (bs_id + 1) * codebook_depth]
-        remap_chunk = []
-        for book_id, quant_id in enumerate(chunk):
-            remap_chunk.append(quant_id - book_id * codebook_size)
-        remapped.append(remap_chunk)
+        # There are two formats in the wild:
+        # 1) "offset" format (common in SAMTok): depth k uses token numbers
+        #    in [k*codebook_size, (k+1)*codebook_size-1], so we subtract k*codebook_size.
+        # 2) "no-offset" format: every depth uses [0, codebook_size-1] directly.
+        #
+        # Prefer offset format when it yields valid codes; otherwise fall back to no-offset.
+        cand_offset = [quant_id - book_id * codebook_size for book_id, quant_id in enumerate(chunk)]
+        if all(0 <= c < codebook_size for c in cand_offset):
+            remapped.append(cand_offset)
+            continue
+
+        cand_raw = list(chunk)
+        if all(0 <= c < codebook_size for c in cand_raw):
+            remapped.append(cand_raw)
+            continue
+
+        # If neither candidate is valid, return the offset candidate (likely invalid).
+        # Downstream code should filter/handle invalid codes safely.
+        remapped.append(cand_offset)
     return remapped
