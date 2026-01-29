@@ -504,6 +504,26 @@ def init_wandb(args: argparse.Namespace):
     return wandb, run
 
 
+def write_results(args: argparse.Namespace, results: List[Dict[str, Any]]) -> str:
+    os.makedirs(args.output_dir, exist_ok=True)
+    if len(results) == 1:
+        output = results[0]
+        if not args.save_per_sample:
+            output.pop("per_sample_results", None)
+    else:
+        if not args.save_per_sample:
+            for result in results:
+                result.pop("per_sample_results", None)
+        output = {"model": args.model, "runs": results}
+
+    output_path = os.path.join(
+        args.output_dir, args.model.replace("/", "_") + ".json"
+    )
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(output, f, indent=2)
+    return output_path
+
+
 def main() -> None:
     args = parse_args()
     load_dotenv()
@@ -658,6 +678,7 @@ def main() -> None:
                     "per_sample_results": per_sample_results if args.save_per_sample else None,
                 }
             )
+            output_path = write_results(args, results)
             if wandb_run is not None:
                 summary = tracker.summary()
                 wandb.log(
@@ -675,22 +696,7 @@ def main() -> None:
                     }
                 )
 
-    os.makedirs(args.output_dir, exist_ok=True)
-    if len(results) == 1:
-        output = results[0]
-        if not args.save_per_sample:
-            output.pop("per_sample_results", None)
-    else:
-        if not args.save_per_sample:
-            for result in results:
-                result.pop("per_sample_results", None)
-        output = {"model": args.model, "runs": results}
-
-    output_path = os.path.join(
-        args.output_dir, args.model.replace("/", "_") + ".json"
-    )
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(output, f, indent=2)
+    output_path = write_results(args, results)
 
     if wandb_run is not None:
         artifact = wandb.Artifact("benchmark-results", type="results")
