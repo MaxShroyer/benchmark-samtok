@@ -473,47 +473,11 @@ def decode_masks_from_codes(
 
     pred_masks = vq_sam2.forward_with_codes(sam2_pixel_values, quant_ids)
     pred_masks = pred_masks.float()
-    # Some checkpoints return logits rather than probabilities.
-    # If values are outside [0, 1], apply sigmoid before thresholding.
-    with torch.no_grad():
-        pm_min = float(pred_masks.min().item())
-        pm_max = float(pred_masks.max().item())
-    if pm_min < 0.0 or pm_max > 1.0:
-        pred_masks = pred_masks.sigmoid()
     pred_masks = F.interpolate(
         pred_masks, size=image.size[::-1], mode="bilinear", align_corners=False
     )
-    # Threshold, with an "empty-mask rescue" for under-confident outputs.
-    # This keeps 0.5 as the default, but if the result is completely empty we
-    # try lower thresholds. This is designed to be no-op for models that already
-    # produce non-empty masks at 0.5.
-    probs = pred_masks  # (B, 1, H, W) float tensor in [0,1] (ideally)
-    thresholds = (0.5, 0.35, 0.2, 0.1)
-    chosen_thr = thresholds[0]
-    chosen = None
-    for thr in thresholds:
-        cand = (probs > thr)
-        # Avoid both the all-zero and all-one degenerate cases.
-        if cand.any() and not bool(cand.all().item()):
-            chosen = cand
-            chosen_thr = thr
-            break
-    if chosen is None:
-        chosen = (probs > thresholds[0])
-
-    debug_mask_stats = os.getenv("SAMTOK_DEBUG_MASK_STATS", "").strip().lower() in {"1", "true", "yes", "y"}
-    if debug_mask_stats:
-        # Print a tiny amount of info; safe for short debug runs.
-        with torch.no_grad():
-            # chosen is bool tensor (B,1,H,W)
-            areas = chosen.flatten(1).sum(dim=1).tolist()
-        print(
-            f"[samtok-benchmark] mask stats: min={pm_min:.4f} max={pm_max:.4f} thr={chosen_thr} areas(first3)={areas[:3]}",
-            flush=True,
-        )
-
-    pred_np = chosen.cpu().numpy().astype(np.uint8)
-    return [pred_np[idx, 0] for idx in range(pred_np.shape[0])]
+    pred_masks = (pred_masks > 0.5).cpu().numpy().astype(np.uint8)
+    return [pred_masks[idx, 0] for idx in range(pred_masks.shape[0])]
 
 
 def predict_masks(
@@ -525,12 +489,6 @@ def predict_masks(
     prompt: str,
     max_new_tokens: int,
 ) -> List[np.ndarray]:
-    debug_decode = os.getenv("SAMTOK_DEBUG_DECODE", "").strip().lower() in {"1", "true", "yes", "y"}
-    debug_mask = os.getenv("SAMTOK_DEBUG_MASK", "").strip().lower() in {"1", "true", "yes", "y"}
-    # Lightweight per-process counter so debug prints don't spam full runs.
-    if not hasattr(predict_masks, "_debug_prints"):
-        setattr(predict_masks, "_debug_prints", 0)
-
     messages = [
         {
             "role": "user",
@@ -558,55 +516,26 @@ def predict_masks(
     generated_ids_trimmed = [
         out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
     ]
-    # Some Qwen tokenizers register the mask tokens (e.g. <|mt_0000|>) as "special",
-    # so `skip_special_tokens=True` can remove them entirely. That leads to empty
-    # quant codes and an all-zero prediction (all metrics become 0).
-    # Keep the existing behavior as the fast path, but fall back to decoding
-    # without skipping special tokens if we don't find any codes.
     output_text = processor.batch_decode(
         generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )[0]
 
     quant_codes = parse_quant_codes(output_text, CODEBOOK_SIZE, CODEBOOK_DEPTH)
     if not quant_codes:
-        if debug_decode:
-            preview = output_text.replace("\n", "\\n")
-            print(f"[samtok-benchmark] decode(no-special) fallback; first decode preview: {preview[:300]}", flush=True)
-        output_text_full = processor.batch_decode(
-            generated_ids_trimmed, skip_special_tokens=False, clean_up_tokenization_spaces=False
-        )[0]
-        quant_codes = parse_quant_codes(output_text_full, CODEBOOK_SIZE, CODEBOOK_DEPTH)
-        if debug_decode:
-            preview_full = output_text_full.replace("\n", "\\n")
-            print(
-                f"[samtok-benchmark] decode(no-special) preview: {preview_full[:300]}",
-                flush=True,
-            )
-    if not quant_codes:
         return []
-
-    if (debug_decode or debug_mask) and getattr(predict_masks, "_debug_prints") < 3:
-        setattr(predict_masks, "_debug_prints", getattr(predict_masks, "_debug_prints") + 1)
-        preview = output_text.replace("\n", "\\n")
-        print(f"[samtok-benchmark] gen preview: {preview[:300]}", flush=True)
-        print(f"[samtok-benchmark] parsed quant_codes (first 5): {quant_codes[:5]}", flush=True)
 
     normalized_codes = []
     for codes in quant_codes:
         codes = codes[:CODEBOOK_DEPTH]
-        # Only pass fully-valid code sequences to SAM2.
-        # Partially-invalid sequences (e.g. caused by differing token numbering schemes)
-        # can lead to degenerate/empty masks; dropping them is safer than injecting -1s.
-        if len(codes) != CODEBOOK_DEPTH:
+        normalized = []
+        for code in codes:
+            if 0 <= code < CODEBOOK_SIZE:
+                normalized.append(code)
+            else:
+                normalized.append(-1)
+        if all(code == -1 for code in normalized):
             continue
-        if not all(0 <= code < CODEBOOK_SIZE for code in codes):
-            if debug_decode:
-                print(f"[samtok-benchmark] dropping invalid code seq: {codes}", flush=True)
-            continue
-        normalized_codes.append(list(codes))
-
-    if (debug_decode or debug_mask) and getattr(predict_masks, "_debug_prints") <= 3:
-        print(f"[samtok-benchmark] normalized_codes (first 5): {normalized_codes[:5]}", flush=True)
+        normalized_codes.append(normalized)
 
     return decode_masks_from_codes(vq_sam2, sam2_image_processor, image, normalized_codes)
 
