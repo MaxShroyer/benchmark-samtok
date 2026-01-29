@@ -1,3 +1,4 @@
+import json
 from typing import Any, Dict
 
 import numpy as np
@@ -7,6 +8,16 @@ from pycocotools import mask as mask_utils
 def decode_rle(rle: Any, height: int, width: int) -> np.ndarray:
     if rle is None:
         return np.zeros((height, width), dtype=np.uint8)
+
+    # Some datasets store the RLE object JSON-encoded as a string.
+    if isinstance(rle, str):
+        s = rle.strip()
+        if s.startswith("{") or s.startswith("["):
+            try:
+                rle = json.loads(s)
+            except Exception:
+                # If parsing fails, fall through to best-effort decoding below.
+                pass
 
     # Support polygon segmentations (COCO style) which may arrive as:
     # - a flat list of numbers: [x1, y1, x2, y2, ...]
@@ -31,6 +42,9 @@ def decode_rle(rle: Any, height: int, width: int) -> np.ndarray:
         # Some datasets store multiple RLE dicts in a list; pick the first.
         if isinstance(rle[0], dict):
             rle = rle[0]
+
+    if not isinstance(rle, dict):
+        return np.zeros((height, width), dtype=np.uint8)
 
     counts = rle.get("counts")
     if isinstance(counts, list):

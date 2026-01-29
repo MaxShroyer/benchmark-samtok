@@ -471,6 +471,22 @@ def iter_expressions(sample: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]
         return None
 
     def ensure_mask(inst: Dict[str, Any], fallback: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Normalize different dataset schemas into a single `mask` field.
+
+        For `moondream/refcoco_plus_rle_val`, prefer `bitmap_rle_original` when present.
+        """
+        # Prefer original-resolution bitmap RLE if available.
+        for key in ("bitmap_rle_original", "bitmap_rle"):
+            value = inst.get(key)
+            if value is None:
+                value = fallback.get(key)
+            if value is not None:
+                merged = dict(inst)
+                merged["mask"] = value
+                return merged
+
+        # Otherwise preserve an explicitly-provided mask or fall back to other common keys.
         if inst.get("mask") is not None:
             return inst
         for key in ("mask", "segmentation", "segmentation_rle", "rle"):
