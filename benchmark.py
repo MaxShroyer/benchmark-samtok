@@ -4,7 +4,6 @@ import json
 import os
 import sys
 import time
-import traceback
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
@@ -69,8 +68,6 @@ def resolve_asset(model_path: str, filename: str) -> str:
 
 
 def load_vlm(model_path: str) -> torch.nn.Module:
-    model_kwargs: Dict[str, Any] = {"torch_dtype": "auto"}
-
     debug = os.getenv("SAMTOK_DEBUG_MODEL", "").strip().lower() in {"1", "true", "yes", "y"}
 
     def _debug(msg: str) -> None:
@@ -80,39 +77,32 @@ def load_vlm(model_path: str) -> torch.nn.Module:
 
     try:
         import transformers
-        from transformers import AutoConfig, AutoModel, AutoModelForCausalLM
     except ImportError as exc:  # pragma: no cover - environment specific
         raise RuntimeError(
             "transformers is required for model loading. "
             "Install with `pip install -U \"transformers>=4.49.0,<5.0.0\"`."
         ) from exc
 
-    auto_image_text_to_text = getattr(transformers, "AutoModelForImageTextToText", None)
-    auto_vision2seq = getattr(transformers, "AutoModelForVision2Seq", None)
-
-    if "qwen3" in model_path.lower():
+    model_path_l = model_path.lower()
+    if "qwen3" in model_path_l:
         from transformers import Qwen3VLForConditionalGeneration
 
         model_cls = Qwen3VLForConditionalGeneration
-    elif "qwen2.5" in model_path.lower() or "qwen25" in model_path.lower():
+    elif "qwen2.5" in model_path_l or "qwen25" in model_path_l:
         model_cls = None
+        # Keep a few import fallbacks for older Transformers builds.
         try:
             from transformers import Qwen2_5VLForConditionalGeneration
 
             model_cls = Qwen2_5VLForConditionalGeneration
         except Exception as exc:
-            _debug(
-                f"Qwen2_5VLForConditionalGeneration import failed: {type(exc).__name__}: {exc}"
-            )
-            # Some transformers builds expose the class as Qwen2_5_VLForConditionalGeneration.
+            _debug(f"Qwen2_5VLForConditionalGeneration import failed: {type(exc).__name__}: {exc}")
             try:
                 from transformers import Qwen2_5_VLForConditionalGeneration  # type: ignore
 
                 model_cls = Qwen2_5_VLForConditionalGeneration
             except Exception as exc2:
-                _debug(
-                    f"Qwen2_5_VLForConditionalGeneration import failed: {type(exc2).__name__}: {exc2}"
-                )
+                _debug(f"Qwen2_5_VLForConditionalGeneration import failed: {type(exc2).__name__}: {exc2}")
                 try:
                     from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (  # type: ignore
                         Qwen2_5_VLForConditionalGeneration,
@@ -124,128 +114,57 @@ def load_vlm(model_path: str) -> torch.nn.Module:
                         "Direct import from transformers.models.qwen2_5_vl failed: "
                         f"{type(exc3).__name__}: {exc3}"
                     )
+        if model_cls is None:
+            raise RuntimeError(
+                "Could not import a Qwen2.5-VL model class from Transformers.\n"
+                f"- transformers={getattr(transformers, '__version__', 'unknown')}\n"
+                "Fix:\n"
+                "- Upgrade Transformers: `pip install -U \"transformers>=4.49.0,<5.0.0\"`"
+            )
     else:
         raise ValueError(f"Unknown model family for {model_path}")
 
-    def _attempt_load(
-        cls,
-        trust_remote_code: bool,
-        *,
-        ignore_mismatched_sizes: bool,
-        config: Any | None,
-    ) -> torch.nn.Module | None:
-        try:
-            kwargs: Dict[str, Any] = dict(
-                model_path,
-                torch_dtype="auto",
-                trust_remote_code=trust_remote_code,
-                ignore_mismatched_sizes=ignore_mismatched_sizes,
-            )
-            if config is not None:
-                # Reuse the config we already loaded (and potentially patched).
-                kwargs["config"] = config
-            return cls.from_pretrained(**kwargs)
-        except Exception as exc:
-            _debug(
-                f"{cls.__name__} from_pretrained failed "
-                f"(trust_remote_code={trust_remote_code}, ignore_mismatched_sizes={ignore_mismatched_sizes}): "
-                f"{type(exc).__name__}: {exc}"
-            )
-            return None
-
-    is_qwen = "qwen" in model_path.lower()
-    # Qwen checkpoints sometimes have repo custom code that maps AutoModel to the base
-    # `Qwen2_5_VLModel` (no `.generate`). Prefer official classes (no remote code) first.
-    trust_order = [False, True] if is_qwen else [False]
-
-    # Grab config early so debug output can show the declared architectures.
-    cfg: Any | None = None
-    for use_remote in trust_order:
-        try:
-            cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=use_remote)
-            # Some environments/models end up with `auto_map=None`, but some
-            # Transformers codepaths assume it's a dict and call `.get(...)`.
-            if getattr(cfg, "auto_map", None) is None:
-                setattr(cfg, "auto_map", {})
-            _debug(
-                f"config auto_map type={type(getattr(cfg, 'auto_map', None)).__name__}"
-            )
-            _debug(
-                f"config loaded (trust_remote_code={use_remote}): "
-                f"model_type={getattr(cfg, 'model_type', None)} "
-                f"architectures={getattr(cfg, 'architectures', None)}"
-            )
-            break
-        except Exception as exc:
-            _debug(f"AutoConfig failed (trust_remote_code={use_remote}): {type(exc).__name__}: {exc}")
-            continue
-
-    candidates: list[type] = []
-    # Prefer the modern auto class when available (replaces AutoModelForVision2Seq).
-    if auto_image_text_to_text is not None:
-        candidates.append(auto_image_text_to_text)
-    elif auto_vision2seq is not None:
-        candidates.append(auto_vision2seq)
-    if model_cls is not None:
-        candidates.append(model_cls)
-    candidates.append(AutoModelForCausalLM)
-    candidates.append(AutoModel)
-
-    last_model: torch.nn.Module | None = None
-    for cls in candidates:
-        for use_remote in trust_order:
-            for ignore_mismatch in (False, True):
-                fallback_model = _attempt_load(
-                    cls,
-                    use_remote,
-                    ignore_mismatched_sizes=ignore_mismatch,
-                    config=cfg,
-                )
-                if fallback_model is None:
-                    continue
-                has_gen = hasattr(fallback_model, "generate")
+    # Prefer official implementations (no remote code) but allow it as a fallback.
+    last_exc: Exception | None = None
+    for trust_remote_code in (False, True):
+        for ignore_mismatched_sizes in (False, True):
+            try:
                 _debug(
-                    f"{cls.__name__} from_pretrained ok "
-                    f"(trust_remote_code={use_remote}, ignore_mismatched_sizes={ignore_mismatch}) "
-                    f"-> type={type(fallback_model).__name__} generate={has_gen}"
+                    f"loading {model_cls.__name__} "
+                    f"(trust_remote_code={trust_remote_code}, ignore_mismatched_sizes={ignore_mismatched_sizes})"
                 )
-                if has_gen:
-                    return fallback_model
-                last_model = fallback_model
+                model = model_cls.from_pretrained(
+                    model_path,
+                    torch_dtype="auto",
+                    trust_remote_code=trust_remote_code,
+                    ignore_mismatched_sizes=ignore_mismatched_sizes,
+                )
+                if hasattr(model, "generate"):
+                    return model
+                last_exc = RuntimeError(
+                    f"Loaded {type(model).__name__} but it has no `.generate`."
+                )
+                _debug(str(last_exc))
+            except Exception as exc:
+                last_exc = exc
+                _debug(
+                    f"{model_cls.__name__} from_pretrained failed "
+                    f"(trust_remote_code={trust_remote_code}, ignore_mismatched_sizes={ignore_mismatched_sizes}): "
+                    f"{type(exc).__name__}: {exc}"
+                )
 
-    # Last resort: some Qwen repos load a model class that doesn't inherit GenerationMixin
-    # even though its forward signature supports generation. Try injecting the mixin.
-    if last_model is not None and not hasattr(last_model, "generate"):
-        try:
-            from transformers.generation.utils import GenerationMixin
-
-            patched_cls = type(
-                f"{last_model.__class__.__name__}WithGenerate",
-                (last_model.__class__, GenerationMixin),
-                {},
-            )
-            last_model.__class__ = patched_cls
-            _debug(
-                f"patched generate via GenerationMixin -> type={type(last_model).__name__} "
-                f"generate={hasattr(last_model, 'generate')}"
-            )
-        except Exception as exc:  # pragma: no cover - best effort
-            _debug(f"GenerationMixin patch failed: {type(exc).__name__}: {exc}")
-
-        if hasattr(last_model, "generate"):
-            return last_model
-
+    assert last_exc is not None
     raise RuntimeError(
         "Could not load a model with `.generate`.\n"
         f"- transformers={getattr(transformers, '__version__', 'unknown')}\n"
-        f"- config.architectures={getattr(cfg, 'architectures', None) if cfg is not None else None}\n"
+        f"- model_class={getattr(model_cls, '__name__', None)}\n"
         "Debug:\n"
         "- Re-run with `SAMTOK_DEBUG_MODEL=1` to print loader attempts.\n"
         "Fix:\n"
         "- Install official Transformers: `pip install -U \"transformers>=4.49.0,<5.0.0\"`\n"
         "- If your `transformers.__version__` looks unusual, uninstall/reinstall:\n"
         "  `pip uninstall -y transformers && pip install -U \"transformers>=4.49.0,<5.0.0\"`"
-    )
+    ) from last_exc
 
 
 def load_processor(model_path: str) -> AutoProcessor:
@@ -265,34 +184,12 @@ def load_processor(model_path: str) -> AutoProcessor:
 
     try:
         return AutoProcessor.from_pretrained(model_path, **base_kwargs)
-    except TypeError:
-        tb = traceback.format_exc()
-        # Transformers may crash inside video_processing_auto when a model declares a
-        # video processor but provides no class name (e.g. `None`).
-        if "video_processing_auto" not in tb and "video_processor" not in tb:
-            raise
-
-        # Work around models that declare a video processor without a class.
-        fallback_kwargs_list = [
-            {**base_kwargs, "video_processor": None},
-            {**base_kwargs, "use_fast": False, "video_processor": None},
-            {**base_kwargs, "trust_remote_code": True, "video_processor": None},
-            {
-                **base_kwargs,
-                "trust_remote_code": True,
-                "use_fast": False,
-                "video_processor": None,
-            },
-        ]
-        last_exc: Exception | None = None
-        for kwargs in fallback_kwargs_list:
-            try:
-                return AutoProcessor.from_pretrained(model_path, **kwargs)
-            except Exception as exc:  # pragma: no cover - best-effort compatibility
-                last_exc = exc
-                continue
-        assert last_exc is not None
-        raise last_exc
+    except Exception as exc:
+        raise RuntimeError(
+            "Could not load a processor for this model.\n"
+            f"- model={model_path}\n"
+            f"- kwargs={base_kwargs}"
+        ) from exc
 
 
 class DirectResize:
