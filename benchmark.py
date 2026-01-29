@@ -464,7 +464,20 @@ def iter_expressions(sample: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]
         if isinstance(payload, str):
             return payload
         if isinstance(payload, dict):
-            for key in ("sent", "sentence", "text", "expression", "expr", "caption", "query"):
+            for key in (
+                "sent",
+                "sentence",
+                "text",
+                "expression",
+                "expr",
+                "caption",
+                "query",
+                # LVIS-style datasets
+                "label",
+                "name",
+                "category",
+                "category_name",
+            ):
                 value = payload.get(key)
                 if isinstance(value, str) and value.strip():
                     return value
@@ -484,6 +497,16 @@ def iter_expressions(sample: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]
             if value is not None:
                 merged = dict(inst)
                 merged["mask"] = value
+                return merged
+
+        # SVG masks (moondream/lvis_segmentation)
+        for key in ("svg", "svg_data"):
+            value = inst.get(key)
+            if value is None:
+                value = fallback.get(key)
+            if value is not None:
+                merged = dict(inst)
+                merged["mask"] = {key: value}
                 return merged
 
         # Otherwise preserve an explicitly-provided mask or fall back to other common keys.
@@ -521,6 +544,13 @@ def iter_expressions(sample: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]
                     continue
                 inst = ensure_mask({**container, **item} if isinstance(item, dict) else container, fallback)
                 entries.append((text, inst))
+        if entries:
+            return entries
+
+        # LVIS-style schema: per-instance label only (no referring expressions list).
+        label = resolve_text(container)
+        if label is not None:
+            entries.append((label, ensure_mask(container, fallback)))
         return entries
 
     output: List[Tuple[str, Dict[str, Any]]] = []
@@ -546,6 +576,16 @@ def iter_expressions(sample: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]
             if isinstance(inst, dict):
                 output.extend(collect_from_container(inst, inst))
         return output
+
+    # LVIS-style per-image containers commonly use `objects` / `annotations` / `instances`.
+    for key in ("objects", "annotations", "instances"):
+        items = sample.get(key)
+        if isinstance(items, list) and items:
+            for inst in items:
+                if isinstance(inst, dict):
+                    output.extend(collect_from_container(inst, inst))
+            if output:
+                return output
 
     output.extend(collect_from_container(sample, sample))
 

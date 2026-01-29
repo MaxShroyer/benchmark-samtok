@@ -1,8 +1,43 @@
+import io
 import json
 from typing import Any, Dict
 
 import numpy as np
 from pycocotools import mask as mask_utils
+from PIL import Image
+
+
+def _decode_svg(svg: str, height: int, width: int) -> np.ndarray:
+    """
+    Rasterize an SVG string to a binary mask at (height, width).
+
+    `moondream/lvis_segmentation` provides per-instance masks as SVG paths.
+    We rasterize them so downstream metrics can use the same mask pipeline as RLE.
+    """
+    try:
+        import cairosvg  # type: ignore
+    except Exception as exc:  # pragma: no cover - environment specific
+        raise RuntimeError(
+            "SVG masks require `cairosvg`.\n"
+            "Install: `pip install cairosvg` (may also require OS cairo libs)."
+        ) from exc
+
+    png_bytes: bytes = cairosvg.svg2png(
+        bytestring=svg.encode("utf-8"),
+        output_width=int(width),
+        output_height=int(height),
+        background_color="transparent",
+    )
+    img = Image.open(io.BytesIO(png_bytes))
+    arr = np.array(img)
+    if arr.ndim == 3 and arr.shape[2] >= 4:
+        # Prefer alpha channel when present (transparent background).
+        mask = arr[:, :, 3] > 0
+    else:
+        # Fallback: threshold luminance.
+        gray = np.array(img.convert("L"))
+        mask = gray < 128
+    return mask.astype(np.uint8)
 
 
 def decode_rle(rle: Any, height: int, width: int) -> np.ndarray:
@@ -12,6 +47,8 @@ def decode_rle(rle: Any, height: int, width: int) -> np.ndarray:
     # Some datasets store the RLE object JSON-encoded as a string.
     if isinstance(rle, str):
         s = rle.strip()
+        if s.startswith("<svg"):
+            return _decode_svg(s, height, width)
         if s.startswith("{") or s.startswith("["):
             try:
                 rle = json.loads(s)
@@ -45,6 +82,22 @@ def decode_rle(rle: Any, height: int, width: int) -> np.ndarray:
 
     if not isinstance(rle, dict):
         return np.zeros((height, width), dtype=np.uint8)
+
+    # SVG-style masks (e.g. moondream/lvis_segmentation)
+    svg = rle.get("svg")
+    if isinstance(svg, str) and svg.strip().startswith("<svg"):
+        return _decode_svg(svg, height, width)
+    svg_data = rle.get("svg_data")
+    if isinstance(svg_data, dict):
+        svg_str = svg_data.get("svg_str")
+        paths = svg_data.get("paths")
+        if isinstance(svg_str, str) and isinstance(paths, list) and paths:
+            # Reconstruct the full svg by substituting |PATH| with a combined path string.
+            # SVG allows multiple subpaths in a single `d` attribute.
+            combined_d = " ".join(p for p in paths if isinstance(p, str))
+            reconstructed = svg_str.replace("|PATH|", combined_d)
+            if reconstructed.strip().startswith("<svg"):
+                return _decode_svg(reconstructed, height, width)
 
     counts = rle.get("counts")
     if isinstance(counts, list):

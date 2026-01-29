@@ -9,3 +9,4 @@ accelerate
 python-dotenv
 wandb
 torchvision
+cairosvg

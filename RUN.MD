@@ -70,11 +70,11 @@ python benchmark.py \
 brokern
   python benchmark.py \
   --model zhouyik/Qwen3-VL-8B-SAMTok \
-  --dataset moondream/lvis_segmentation,lmms-lab/RefCOCOplus
-
+  --dataset moondream/lvis_segmentation
+  
   python benchmark.py \
   --model zhouyik/Qwen3-VL-4B-SAMTok \
-  --dataset moondream/lvis_segmentation,lmms-lab/RefCOCOplus
+  --dataset moondream/lvis_segmentation
 
 
 
