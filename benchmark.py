@@ -89,10 +89,9 @@ def load_vlm(model_path: str) -> torch.nn.Module:
                 try:
                     import transformers
 
-                    auto_cls = getattr(
-                        transformers, "AutoModelForCausalLM", None
-                    ) or getattr(transformers, "AutoModel", None)
-                    if auto_cls is None:
+                    auto_causal = getattr(transformers, "AutoModelForCausalLM", None)
+                    auto_model = getattr(transformers, "AutoModel", None)
+                    if auto_causal is None and auto_model is None:
                         raise ImportError(
                             "AutoModelForCausalLM not available in transformers."
                         )
@@ -104,9 +103,16 @@ def load_vlm(model_path: str) -> torch.nn.Module:
                         "`pip install -U \"transformers>=4.49.0,<5.0.0\"`)."
                     ) from inner_exc
 
-                return auto_cls.from_pretrained(
-                    model_path, torch_dtype="auto", trust_remote_code=True
-                )
+                try:
+                    return auto_causal.from_pretrained(
+                        model_path, torch_dtype="auto", trust_remote_code=True
+                    )
+                except Exception:
+                    if auto_model is None:
+                        raise
+                    return auto_model.from_pretrained(
+                        model_path, torch_dtype="auto", trust_remote_code=True
+                    )
 
         model_cls = Qwen2_5VLForConditionalGeneration
     else:
