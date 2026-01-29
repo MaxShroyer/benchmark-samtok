@@ -173,6 +173,8 @@ def load_processor(model_path: str) -> AutoProcessor:
     # Qwen VL processors frequently rely on custom code in the repo.
     if "qwen" in model_path.lower():
         base_kwargs["trust_remote_code"] = True
+        # Suppress fast/slow warning and match legacy processor behavior.
+        base_kwargs["use_fast"] = False
 
     # If torchvision isn't available, "fast" image processing can't be used anyway.
     # Avoid the noisy warning + fallback by explicitly disabling it.
