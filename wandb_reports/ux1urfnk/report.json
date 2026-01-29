@@ -20,8 +20,66 @@
     "max_new_tokens": 256,
     "save_per_sample": false
   },
-  // ....
-
+  "processed_expr_step_max": 0,
+  "throughput_last_expr_s": null,
+  "sample_iou": {
+    "mean": null,
+    "p50": null,
+    "p90": null,
+    "p95": null
+  },
+  "sample_f1": {
+    "mean": null,
+    "p50": null,
+    "p90": null,
+    "p95": null
+  },
+  "predict_latency_s": {
+    "mean": null,
+    "p50": null,
+    "p90": null,
+    "p95": null
+  },
+  "expr_latency_s": {
+    "mean": null,
+    "p50": null,
+    "p90": null,
+    "p95": null
+  },
+  "dataset_split_counts": {},
+  "wandb_summary_keys": [
+    "_runtime",
+    "_step",
+    "_timestamp",
+    "_wandb",
+    "expr_step",
+    "perf/expr_latency_s",
+    "perf/predict_latency_s",
+    "perf/throughput_expr_s",
+    "sample/cIoU",
+    "sample/dataset",
+    "sample/expression",
+    "sample/f1",
+    "sample/gIoU",
+    "sample/gt_count",
+    "sample/image_id",
+    "sample/iou",
+    "sample/n_acc",
+    "sample/precision",
+    "sample/pred_count",
+    "sample/recall",
+    "sample/split",
+    "summary/cIoU",
+    "summary/count",
+    "summary/dataset",
+    "summary/f1",
+    "summary/gIoU",
+    "summary/mIoU",
+    "summary/n_acc",
+    "summary/precision",
+    "summary/recall",
+    "summary/split"
+  ],
   "wandb_summary_selected": {
     "summary/cIoU": 0.6268458828341418,
     "summary/count": 5598,

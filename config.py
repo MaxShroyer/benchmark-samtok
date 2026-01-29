@@ -48,12 +48,7 @@ DATASET_DEFAULT_SPLITS = {
 
 }
 
-PROMPT_TEMPLATE = (
-    "Segment the object described by: \"{referring_expression}\".\n"
-    "Respond ONLY with a single mask token sequence in the exact format:\n"
-    "<|mt_start|><|mt_0000|><|mt_0000|><|mt_end|>\n"
-    "Do not include any other text."
-)
+PROMPT_TEMPLATE = "Please segment {referring_expression} in this image."
 
 CODEBOOK_SIZE = 256
 CODEBOOK_DEPTH = 2
