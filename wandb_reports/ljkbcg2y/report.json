@@ -1,0 +1,41 @@
+{
+  "meta": {
+    "id": "ljkbcg2y",
+    "name": "gentle-sea-11",
+    "state": "running",
+    "url": "https://wandb.ai/maxshroyer49-na/samtok-benchmark/runs/ljkbcg2y",
+    "created_at": "2026-01-29T02:08:10Z"
+  },
+  "config_compact": {
+    "model": "zhouyik/Qwen3-VL-8B-SAMTok",
+    "datasets": [
+      "moondream/refcoco-m",
+      "moondream/refcoco_rle",
+      "moondream/refcoco_plus_rle_val",
+      "moondream/lvis_segmentation",
+      "lmms-lab/RefCOCOplus"
+    ],
+    "split_arg": null,
+    "max_samples": 0,
+    "max_new_tokens": 256,
+    "save_per_sample": false
+  },
+  // ....
+  
+  "wandb_summary_selected": {
+    "summary/cIoU": 0.7109649528553494,
+    "summary/count": 5598,
+    "summary/dataset": "moondream/refcoco-m",
+    "summary/f1": 0.7396282296685235,
+    "summary/gIoU": 0.7109649528553494,
+    "summary/mIoU": 0.7109649528553494,
+    "summary/n_acc": 0.8208288674526617,
+    "summary/precision": 0.7605731418504927,
+    "summary/recall": 0.734023627155952,
+    "summary/split": "validation"
+  },
+  "downloaded_artifact_jsons": [],
+  "files": {
+    "history_csv": "wandb_reports/ljkbcg2y/history_sample_perf.csv"
+  }
+}

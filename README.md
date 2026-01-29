@@ -1,7 +1,7 @@
 # SAMTok RefCOCO-M Benchmark
 
-Benchmark SAMTok variants on RefCOCO-style datasets, reporting mIoU, precision, recall, F1,
-plus gIoU/cIoU/N-acc for comparison with paper metrics.
+Benchmark SAMTok variants on RefCOCO-style datasets, reporting mask mIoU, precision, recall, F1,
+plus **box** GIoU/CIoU (computed from mask-derived bounding boxes), and a few legacy set-level mask metrics.
 
 ## Setup
 
@@ -64,8 +64,13 @@ Each result JSON includes:
 - `metrics.precision`
 - `metrics.recall`
 - `metrics.f1`
+- `metrics.box_iou`
+- `metrics.box_giou` (same as `metrics.gIoU`)
+- `metrics.box_ciou` (same as `metrics.cIoU` before cumulative fix)
 - `metrics.gIoU`
-- `metrics.cIoU`
+- `metrics.cIoU` (cumulative IoU: total_tp / (total_tp + total_fp + total_fn))
+- `metrics.union_iou` (IoU of union(pred_masks) vs gt mask)
+- `metrics.best_match_iou` (best-match IoU with a penalty for extra masks)
 - `metrics.n_acc`
 
 ## RefCOCO+ Comparison (Shared Dataset)

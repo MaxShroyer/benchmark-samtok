@@ -1,4 +1,4 @@
-ssh  -i ~/.ssh/primeintellect_ed25519 ...
+python -m venv .venv  ...
 
 git clone https://github.com/MaxShroyer/benchmark-samtok.git
 git clone https://github.com/bytedance/Sa2VA.git
@@ -29,3 +29,22 @@ python benchmark.py \
 python benchmark.py \
   --model zhouyik/Qwen2.5-VL-3B-SAMTok-co \
   --dataset moondream/refcoco-m,moondream/refcoco_rle,moondream/refcoco_plus_rle_val,moondream/lvis_segmentation,lmms-lab/RefCOCOplus
+
+python benchmark.py \
+  --model zhouyik/Qwen3-VL-8B-SAMTok \
+  --dataset moondream/lvis_segmentation,lmms-lab/RefCOCOplus
+
+python benchmark.py \
+  --model zhouyik/Qwen3-VL-8B-SAMTok \
+  --dataset moondream/refcoco-m,lmms-lab/RefCOCOplus
+
+
+
+
+  python benchmark.py \
+  --model zhouyik/Qwen3-VL-8B-SAMTok \
+  --dataset moondream/lvis_segmentation,lmms-lab/RefCOCOplus
+
+  python benchmark.py \
+  --model zhouyik/Qwen3-VL-4B-SAMTok \
+  --dataset moondream/lvis_segmentation,lmms-lab/RefCOCOplus
