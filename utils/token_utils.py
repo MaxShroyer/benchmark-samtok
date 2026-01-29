@@ -1,14 +1,16 @@
 import re
-from typing import List, Tuple
+from typing import List
 
 
 def extract_mt_token_ids_v1(text: str) -> List[int]:
-    pattern = r"<\|mt_(\d{4})\|>"
+    # Most checkpoints use zero-padded 4 digits (<|mt_0000|>),
+    # but some generations can omit leading zeros (<|mt_1|>).
+    pattern = r"<\|mt_(\d{1,4})\|>"
     return [int(x) for x in re.findall(pattern, text)]
 
 
 def extract_mt_token_ids_v2(text: str) -> List[int]:
-    pattern = re.compile(r"<\|mt_start\|><\|mt_(\d{4})\|><\|mt_(\d{4})\|><\|mt_end\|>")
+    pattern = re.compile(r"<\|mt_start\|><\|mt_(\d{1,4})\|><\|mt_(\d{1,4})\|><\|mt_end\|>")
     matches = pattern.findall(text)
     ret_list = []
     for num1, num2 in matches:

@@ -2,6 +2,7 @@ import argparse
 import io
 import json
 import os
+import re
 import sys
 import time
 from typing import Any, Dict, List, Tuple
@@ -30,6 +31,32 @@ from samtok_imports import ensure_samtok_imports
 from utils.mask_utils import decode_rle
 from utils.metrics import MetricTracker, compute_sample_metrics, compute_set_metrics
 from utils.token_utils import parse_quant_codes
+
+
+def _extract_mt_codes_from_token_ids(tokenizer, token_ids: List[int]) -> List[int]:
+    """
+    Extract SAMTok mt codes directly from generated token IDs.
+
+    This is more robust than text decoding because:
+    - Some tokenizers may treat mt tokens as "special" and strip them in decode.
+    - Some decoders may alter spacing/formatting around the raw token strings.
+    """
+    # Convert to token strings (no decoding heuristics).
+    if tokenizer is None:
+        return []
+    try:
+        tokens = tokenizer.convert_ids_to_tokens(token_ids)
+    except Exception:
+        return []
+
+    # Accept both zero-padded (<|mt_0000|>) and non-padded (<|mt_1|>) forms.
+    pattern = re.compile(r"^<\|mt_(\d{1,4})\|>$")
+    out: List[int] = []
+    for tok in tokens:
+        m = pattern.match(tok)
+        if m:
+            out.append(int(m.group(1)))
+    return out
 
 
 def parse_args() -> argparse.Namespace:
@@ -498,14 +525,21 @@ def predict_masks(
             ],
         }
     ]
-    inputs = processor.apply_chat_template(
+    # Build a single chat-formatted string, then let the processor encode multimodal inputs.
+    # This is the most compatible path across Qwen2.5-VL and Qwen3-VL processors.
+    text = processor.apply_chat_template(
         messages,
-        tokenize=True,
+        tokenize=False,
         add_generation_prompt=True,
-        return_dict=True,
+    )
+    inputs = processor(
+        text=[text],
+        images=[image],
         return_tensors="pt",
+        padding=True,
     )
     inputs = inputs.to(model.device)
+    debug_decode = os.getenv("SAMTOK_DEBUG_DECODE", "").strip().lower() in {"1", "true", "yes", "y"}
 
     generated_ids = model.generate(
         **inputs,
@@ -513,14 +547,43 @@ def predict_masks(
         do_sample=False,
         top_p=1.0,
     )
+    # Trim the prompt tokens to keep only new tokens.
     generated_ids_trimmed = [
         out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
     ]
-    output_text = processor.batch_decode(
+
+    # Decode both ways: some tokenizers may (mis)classify mt tokens as special.
+    output_text_clean = processor.batch_decode(
         generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )[0]
+    output_text_raw = processor.batch_decode(
+        generated_ids_trimmed, skip_special_tokens=False, clean_up_tokenization_spaces=False
+    )[0]
 
-    quant_codes = parse_quant_codes(output_text, CODEBOOK_SIZE, CODEBOOK_DEPTH)
+    # First try parsing from decoded text, then fall back to token-id based extraction.
+    quant_codes = parse_quant_codes(output_text_clean, CODEBOOK_SIZE, CODEBOOK_DEPTH)
+    if not quant_codes and output_text_raw != output_text_clean:
+        quant_codes = parse_quant_codes(output_text_raw, CODEBOOK_SIZE, CODEBOOK_DEPTH)
+    if not quant_codes:
+        # Token-id based recovery: convert mt token strings directly from generated IDs.
+        mt_ids = _extract_mt_codes_from_token_ids(
+            getattr(processor, "tokenizer", None),
+            generated_ids_trimmed[0].tolist(),
+        )
+        if mt_ids:
+            # Reconstruct the "text-like" form expected by parse_quant_codes.
+            # (We keep the same remapping logic centralized in parse_quant_codes.)
+            mt_text = "".join(f"<|mt_{i:04d}|>" for i in mt_ids)
+            quant_codes = parse_quant_codes(mt_text, CODEBOOK_SIZE, CODEBOOK_DEPTH)
+        elif debug_decode:
+            # Helpful when a model returns "mask:N" instead of mt tokens.
+            print(
+                "[samtok-benchmark] decode debug:"
+                f"\n- inputs_keys={sorted(list(inputs.keys()))}"
+                f"\n- output_text_clean={output_text_clean!r}"
+                f"\n- output_text_raw={output_text_raw!r}",
+                flush=True,
+            )
     if not quant_codes:
         return []
 
