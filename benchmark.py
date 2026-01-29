@@ -118,13 +118,19 @@ def load_vlm(model_path: str) -> torch.nn.Module:
 
     try:
         import transformers
-        from transformers import AutoModel, AutoModelForCausalLM
+        from transformers import AutoConfig, AutoModel, AutoModelForCausalLM
     except ImportError as exc:  # pragma: no cover - environment specific
         raise RuntimeError(
             "Loaded a model without `generate`, and auto model classes "
             "are unavailable. Please upgrade transformers."
         ) from exc
     auto_vision2seq = getattr(transformers, "AutoModelForVision2Seq", None)
+
+    debug = os.getenv("SAMTOK_DEBUG_MODEL", "").strip().lower() in {"1", "true", "yes", "y"}
+
+    def _debug(msg: str) -> None:
+        if debug:
+            print(f"[samtok-benchmark] {msg}", file=sys.stderr)
 
     def try_load(cls, trust_remote_code: bool) -> torch.nn.Module | None:
         try:
@@ -136,10 +142,36 @@ def load_vlm(model_path: str) -> torch.nn.Module:
         except Exception:
             return None
 
-    # Qwen model repos sometimes ship custom modeling code that returns a bare
-    # torch.nn.Module without GenerationMixin (no `.generate`). Prefer the
-    # official Transformers implementations first.
-    trust_order = [False, True] if "qwen" in model_path.lower() else [False]
+    def try_load_ignore_mismatch(cls, trust_remote_code: bool) -> torch.nn.Module | None:
+        try:
+            return cls.from_pretrained(
+                model_path,
+                torch_dtype="auto",
+                trust_remote_code=trust_remote_code,
+                ignore_mismatched_sizes=True,
+            )
+        except Exception:
+            return None
+
+    is_qwen = "qwen" in model_path.lower()
+    # Qwen checkpoints sometimes have repo custom code that maps AutoModel to the base
+    # `Qwen2_5_VLModel` (no `.generate`). Prefer official classes (no remote code) first.
+    trust_order = [False, True] if is_qwen else [False]
+
+    # Grab config early so debug output can show the declared architectures.
+    cfg = None
+    for use_remote in trust_order:
+        try:
+            cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=use_remote)
+            _debug(
+                f"config loaded (trust_remote_code={use_remote}): "
+                f"model_type={getattr(cfg, 'model_type', None)} "
+                f"architectures={getattr(cfg, 'architectures', None)}"
+            )
+            break
+        except Exception as exc:
+            _debug(f"AutoConfig failed (trust_remote_code={use_remote}): {type(exc).__name__}: {exc}")
+            continue
 
     candidates: list[type] = []
     if auto_vision2seq is not None:
@@ -150,11 +182,21 @@ def load_vlm(model_path: str) -> torch.nn.Module:
 
     for cls in candidates:
         for use_remote in trust_order:
-            fallback_model = try_load(cls, use_remote)
-            if fallback_model is None:
-                continue
-            if hasattr(fallback_model, "generate"):
-                return fallback_model
+            for loader, label in (
+                (try_load, "from_pretrained"),
+                (try_load_ignore_mismatch, "from_pretrained(ignore_mismatched_sizes=True)"),
+            ):
+                fallback_model = loader(cls, use_remote)
+                if fallback_model is None:
+                    _debug(f"{cls.__name__} {label} failed (trust_remote_code={use_remote})")
+                    continue
+                has_gen = hasattr(fallback_model, "generate")
+                _debug(
+                    f"{cls.__name__} {label} ok (trust_remote_code={use_remote}) "
+                    f"-> type={type(fallback_model).__name__} generate={has_gen}"
+                )
+                if has_gen:
+                    return fallback_model
 
     raise RuntimeError(
         "Model backend does not provide `generate`. Install a compatible "
@@ -604,6 +646,11 @@ def main() -> None:
     load_dotenv()
 
     model = load_vlm(args.model)
+    if not hasattr(model, "generate"):
+        raise RuntimeError(
+            f"Loaded model {type(model).__name__} without `generate`. "
+            "Set SAMTOK_DEBUG_MODEL=1 to see loader attempts."
+        )
     model = model.cuda().eval()
     processor = load_processor(args.model)
     vq_sam2, sam2_image_processor = build_samtok(args.model, model.device)
