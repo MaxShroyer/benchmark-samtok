@@ -5,7 +5,7 @@ plus gIoU/cIoU/N-acc for comparison with paper metrics.
 
 ## Setup
 
-1. Create a Python environment and install dependencies (Qwen2.5-VL needs transformers >= 4.49.0):
+1. Create a Python environment and install dependencies (Qwen2.5-VL needs transformers 4.x, >= 4.49.0):
 
    ```bash
    pip install -r requirements.txt
