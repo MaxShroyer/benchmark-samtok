@@ -1,4 +1,6 @@
 import argparse
+import contextlib
+import gc
 import io
 import json
 import os
@@ -8,6 +10,11 @@ import time
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
+
+# Helps avoid CUDA allocator fragmentation in long runs.
+# Must be set before CUDA context initialization; safe if already set by user.
+os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
+
 import torch
 import torch.nn.functional as F
 from datasets import IterableDataset, get_dataset_split_names, load_dataset
@@ -88,7 +95,94 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb-run-name", default=None)
     parser.add_argument("--wandb-tags", default="")
     parser.add_argument("--wandb-log-every", type=int, default=1)
+    parser.add_argument(
+        "--sam2-decode-batch-size",
+        type=int,
+        default=1,
+        help="How many SAM2 code sequences to decode per forward pass. "
+        "Lower uses less VRAM but is slower. (Recommended: 1)",
+    )
+    parser.add_argument(
+        "--disable-amp",
+        action="store_true",
+        help="Disable autocast mixed-precision (higher VRAM, slower).",
+    )
+    parser.add_argument(
+        "--cuda-empty-cache-every",
+        type=int,
+        default=0,
+        help="Call torch.cuda.empty_cache() every N expressions (0 disables).",
+    )
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=0,
+        help="Write a resume checkpoint every N expressions (0 disables).",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from the checkpoint file (if present) instead of starting over.",
+    )
+    parser.add_argument(
+        "--on-oom",
+        choices=["checkpoint_and_exit", "skip", "crash"],
+        default="checkpoint_and_exit",
+        help="What to do on CUDA OOM during an expression.",
+    )
     return parser.parse_args()
+
+
+def _is_cuda_oom(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return isinstance(exc, torch.OutOfMemoryError) or ("cuda out of memory" in msg)
+
+
+def _autocast_ctx(device: torch.device, dtype: torch.dtype, enabled: bool):
+    if not enabled:
+        return contextlib.nullcontext()
+    if device.type != "cuda":
+        return contextlib.nullcontext()
+    if dtype not in (torch.float16, torch.bfloat16):
+        return contextlib.nullcontext()
+    return torch.autocast(device_type="cuda", dtype=dtype)
+
+
+def _checkpoint_path(args: argparse.Namespace, dataset_name: str, split: str) -> str:
+    os.makedirs(args.output_dir, exist_ok=True)
+    safe_model = args.model.replace("/", "_")
+    safe_dataset = dataset_name.replace("/", "_")
+    safe_split = split.replace("/", "_")
+    return os.path.join(args.output_dir, f"{safe_model}__{safe_dataset}__{safe_split}.checkpoint.json")
+
+
+def _load_checkpoint(path: str) -> Dict[str, Any] | None:
+    if not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _save_checkpoint(
+    path: str,
+    *,
+    args: argparse.Namespace,
+    dataset_name: str,
+    split: str,
+    total_expr_done: int,
+    tracker: "MetricTracker",
+    per_sample_results: List[Dict[str, Any]] | None,
+) -> None:
+    payload = {
+        "model": args.model,
+        "dataset": dataset_name,
+        "split": split,
+        "total_expr_done": int(total_expr_done),
+        "tracker_state": dict(tracker.__dict__),
+        "per_sample_results": per_sample_results,
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
 
 
 def resolve_asset(model_path: str, filename: str) -> str:
@@ -621,25 +715,53 @@ def decode_masks_from_codes(
     sam2_image_processor,
     image: Image.Image,
     codes_list: List[List[int]],
+    *,
+    decode_batch_size: int = 1,
+    enable_amp: bool = True,
 ) -> List[np.ndarray]:
     if not codes_list:
         return []
 
     sam2_image = np.array(image)
     sam2_image = sam2_image_processor.apply_image(sam2_image)
-    sam2_pixel_values = torch.from_numpy(sam2_image).permute(2, 0, 1).contiguous()
-    sam2_pixel_values = sam2_pixel_values.unsqueeze(0).to(vq_sam2.dtype).to(vq_sam2.device)
-    sam2_pixel_values = sam2_pixel_values.repeat(len(codes_list), 1, 1, 1)
-
-    quant_ids = torch.LongTensor(codes_list).to(vq_sam2.device)
-
-    pred_masks = vq_sam2.forward_with_codes(sam2_pixel_values, quant_ids)
-    pred_masks = pred_masks.float()
-    pred_masks = F.interpolate(
-        pred_masks, size=image.size[::-1], mode="bilinear", align_corners=False
+    sam2_pixel_values_1 = torch.from_numpy(sam2_image).permute(2, 0, 1).contiguous()
+    sam2_pixel_values_1 = sam2_pixel_values_1.unsqueeze(0).to(
+        device=vq_sam2.device, dtype=vq_sam2.dtype
     )
-    pred_masks = (pred_masks > 0.5).cpu().numpy().astype(np.uint8)
-    return [pred_masks[idx, 0] for idx in range(pred_masks.shape[0])]
+
+    decode_batch_size = max(int(decode_batch_size), 1)
+    out_masks: List[np.ndarray] = []
+
+    # Chunked decoding avoids VRAM spikes when a model produces many code sequences.
+    with torch.inference_mode(), _autocast_ctx(vq_sam2.device, vq_sam2.dtype, enable_amp):
+        start = 0
+        while start < len(codes_list):
+            chunk = codes_list[start : start + decode_batch_size]
+            try:
+                quant_ids = torch.as_tensor(chunk, dtype=torch.long, device=vq_sam2.device)
+                # Expand creates a view (no copy); much cheaper than repeat().
+                pixel_values = sam2_pixel_values_1.expand(len(chunk), -1, -1, -1)
+                pred_masks = vq_sam2.forward_with_codes(pixel_values, quant_ids)
+                pred_masks = F.interpolate(
+                    pred_masks, size=image.size[::-1], mode="bilinear", align_corners=False
+                )
+                pred_masks = (pred_masks > 0.5).to(torch.uint8).cpu().numpy()
+                out_masks.extend([pred_masks[i, 0] for i in range(pred_masks.shape[0])])
+                del quant_ids, pixel_values, pred_masks
+                start += len(chunk)
+            except RuntimeError as exc:
+                if not _is_cuda_oom(exc):
+                    raise
+                if vq_sam2.device.type == "cuda":
+                    torch.cuda.empty_cache()
+                gc.collect()
+                # If chunking still OOMs, fall back to 1-by-1 for just this region.
+                if len(chunk) == 1:
+                    raise
+                decode_batch_size = 1
+                continue
+
+    return out_masks
 
 
 def predict_masks(
@@ -650,6 +772,9 @@ def predict_masks(
     image: Image.Image,
     prompt: str,
     max_new_tokens: int,
+    *,
+    sam2_decode_batch_size: int = 1,
+    enable_amp: bool = True,
 ) -> List[np.ndarray]:
     messages = [
         {
@@ -676,12 +801,13 @@ def predict_masks(
     inputs = inputs.to(model.device)
     debug_decode = os.getenv("SAMTOK_DEBUG_DECODE", "").strip().lower() in {"1", "true", "yes", "y"}
 
-    generated_ids = model.generate(
-        **inputs,
-        max_new_tokens=max_new_tokens,
-        do_sample=False,
-        top_p=1.0,
-    )
+    with torch.inference_mode(), _autocast_ctx(model.device, model.dtype, enable_amp):
+        generated_ids = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            top_p=1.0,
+        )
     # Trim the prompt tokens to keep only new tokens.
     generated_ids_trimmed = [
         out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
@@ -735,7 +861,19 @@ def predict_masks(
             continue
         normalized_codes.append(normalized)
 
-    return decode_masks_from_codes(vq_sam2, sam2_image_processor, image, normalized_codes)
+    # Free VLM-side tensors before SAM2 decode (helps peak VRAM).
+    del inputs, generated_ids, generated_ids_trimmed
+    if model.device.type == "cuda":
+        torch.cuda.synchronize()
+
+    return decode_masks_from_codes(
+        vq_sam2,
+        sam2_image_processor,
+        image,
+        normalized_codes,
+        decode_batch_size=sam2_decode_batch_size,
+        enable_amp=enable_amp,
+    )
 
 
 def init_wandb(args: argparse.Namespace):
@@ -784,6 +922,8 @@ def main() -> None:
     args = parse_args()
     load_dotenv()
 
+    enable_amp = not args.disable_amp
+
     model = load_vlm(args.model)
     if not hasattr(model, "generate"):
         raise RuntimeError(
@@ -791,6 +931,10 @@ def main() -> None:
             "Set SAMTOK_DEBUG_MODEL=1 to see loader attempts."
         )
     model = model.cuda().eval()
+    torch.set_grad_enabled(False)
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     processor = load_processor(args.model)
     vq_sam2, sam2_image_processor = build_samtok(args.model, model.device)
 
@@ -830,6 +974,26 @@ def main() -> None:
             per_sample_results = []
 
             total_expr = 0
+            resume_target = 0
+            skipped_expr = 0
+            ckpt_path = _checkpoint_path(args, dataset_name, split)
+            if args.resume:
+                ckpt = _load_checkpoint(ckpt_path)
+                if ckpt and ckpt.get("model") == args.model:
+                    resume_target = int(ckpt.get("total_expr_done", 0))
+                    state = ckpt.get("tracker_state") or {}
+                    if isinstance(state, dict):
+                        for k, v in state.items():
+                            try:
+                                setattr(tracker, k, v)
+                            except Exception:
+                                pass
+                    if args.save_per_sample and isinstance(ckpt.get("per_sample_results"), list):
+                        per_sample_results = ckpt["per_sample_results"]
+                    total_expr = int(getattr(tracker, "count", 0))
+                    tqdm.write(
+                        f"[samtok-benchmark] Resuming {dataset_name}:{split} from expr_step={resume_target}"
+                    )
             for sample in tqdm(dataset, desc=f"Evaluating {dataset_name}:{split}"):
                 image = sample["image"]
                 if not isinstance(image, Image.Image):
@@ -848,18 +1012,53 @@ def main() -> None:
                 for expression, inst in iter_expressions(sample):
                     if args.max_samples and total_expr >= args.max_samples:
                         break
+                    if skipped_expr < resume_target:
+                        skipped_expr += 1
+                        continue
 
                     prompt = build_prompt(expression)
                     pred_start = time.perf_counter()
-                    pred_masks = predict_masks(
-                        model,
-                        processor,
-                        vq_sam2,
-                        sam2_image_processor,
-                        image,
-                        prompt,
-                        args.max_new_tokens,
-                    )
+                    try:
+                        pred_masks = predict_masks(
+                            model,
+                            processor,
+                            vq_sam2,
+                            sam2_image_processor,
+                            image,
+                            prompt,
+                            args.max_new_tokens,
+                            sam2_decode_batch_size=args.sam2_decode_batch_size,
+                            enable_amp=enable_amp,
+                        )
+                    except RuntimeError as exc:
+                        if not _is_cuda_oom(exc):
+                            raise
+                        if model.device.type == "cuda":
+                            torch.cuda.empty_cache()
+                        gc.collect()
+                        if args.checkpoint_every or args.on_oom == "checkpoint_and_exit":
+                            _save_checkpoint(
+                                ckpt_path,
+                                args=args,
+                                dataset_name=dataset_name,
+                                split=split,
+                                total_expr_done=total_expr,
+                                tracker=tracker,
+                                per_sample_results=per_sample_results if args.save_per_sample else None,
+                            )
+                        if args.on_oom == "skip":
+                            tqdm.write(
+                                "[samtok-benchmark] CUDA OOM: skipping this expression after checkpoint."
+                            )
+                            continue
+                        if args.on_oom == "checkpoint_and_exit":
+                            raise RuntimeError(
+                                "CUDA OOM during evaluation. A checkpoint was written so you can resume.\n"
+                                f"- checkpoint: {ckpt_path}\n"
+                                "Tip: stop other GPU processes; keep AMP enabled; "
+                                "and use `--sam2-decode-batch-size 1` (default)."
+                            ) from exc
+                        raise
                     pred_end = time.perf_counter()
 
                     gt_mask = decode_rle(inst.get("mask"), height, width)
@@ -905,6 +1104,20 @@ def main() -> None:
                         )
 
                     total_expr += 1
+                    if args.checkpoint_every and (total_expr % args.checkpoint_every == 0):
+                        _save_checkpoint(
+                            ckpt_path,
+                            args=args,
+                            dataset_name=dataset_name,
+                            split=split,
+                            total_expr_done=total_expr,
+                            tracker=tracker,
+                            per_sample_results=per_sample_results if args.save_per_sample else None,
+                        )
+                    if args.cuda_empty_cache_every and (total_expr % args.cuda_empty_cache_every == 0):
+                        if model.device.type == "cuda":
+                            torch.cuda.empty_cache()
+                        gc.collect()
                     if args.running_metrics_every and (total_expr % args.running_metrics_every == 0):
                         summary = tracker.summary()
                         ordered_keys = [

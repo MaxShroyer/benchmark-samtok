@@ -2,7 +2,7 @@
   "meta": {
     "id": "ux1urfnk",
     "name": "glorious-vortex-12",
-    "state": "running",
+    "state": "crashed",
     "url": "https://wandb.ai/maxshroyer49-na/samtok-benchmark/runs/ux1urfnk",
     "created_at": "2026-01-29T02:12:07Z"
   },
@@ -20,6 +20,10 @@
     "max_new_tokens": 256,
     "save_per_sample": false
   },
+  "miou": 0.0,
+  "miou_source": "summary",
+  "is_junk": true,
+  "junk_reason": "mIoU_is_zero",
   "processed_expr_step_max": 0,
   "throughput_last_expr_s": null,
   "sample_iou": {
@@ -29,6 +33,36 @@
     "p95": null
   },
   "sample_f1": {
+    "mean": null,
+    "p50": null,
+    "p90": null,
+    "p95": null
+  },
+  "sample_box_iou": {
+    "mean": null,
+    "p50": null,
+    "p90": null,
+    "p95": null
+  },
+  "sample_box_giou": {
+    "mean": null,
+    "p50": null,
+    "p90": null,
+    "p95": null
+  },
+  "sample_box_ciou": {
+    "mean": null,
+    "p50": null,
+    "p90": null,
+    "p95": null
+  },
+  "sample_union_iou": {
+    "mean": null,
+    "p50": null,
+    "p90": null,
+    "p95": null
+  },
+  "sample_best_match_iou": {
     "mean": null,
     "p50": null,
     "p90": null,
@@ -81,15 +115,15 @@
     "summary/split"
   ],
   "wandb_summary_selected": {
-    "summary/cIoU": 0.6268458828341418,
-    "summary/count": 5598,
-    "summary/dataset": "moondream/refcoco-m",
-    "summary/f1": 0.6557242131996223,
-    "summary/gIoU": 0.6268458828341418,
-    "summary/mIoU": 0.6268458828341418,
-    "summary/n_acc": 0.9841014648088604,
-    "summary/precision": 0.7005480290564317,
-    "summary/recall": 0.6462919735104425,
+    "summary/cIoU": 0,
+    "summary/count": 10268,
+    "summary/dataset": "moondream/refcoco_rle",
+    "summary/f1": 0,
+    "summary/gIoU": 0,
+    "summary/mIoU": 0,
+    "summary/n_acc": 0.020062329567588626,
+    "summary/precision": 0,
+    "summary/recall": 0,
     "summary/split": "validation"
   },
   "downloaded_artifact_jsons": [],

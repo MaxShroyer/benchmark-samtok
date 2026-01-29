@@ -1,8 +1,9 @@
 # W&B run report: ljkbcg2y
 
 - name: gentle-sea-11
-- state: running
+- state: crashed
 - url: https://wandb.ai/maxshroyer49-na/samtok-benchmark/runs/ljkbcg2y
+- mIoU: 0.000000
 - processed expr (max expr_step): 0
 
 ## Config (compact)
@@ -40,6 +41,36 @@
     "p90": null,
     "p95": null
   },
+  "sample/box_iou": {
+    "mean": null,
+    "p50": null,
+    "p90": null,
+    "p95": null
+  },
+  "sample/gIoU": {
+    "mean": null,
+    "p50": null,
+    "p90": null,
+    "p95": null
+  },
+  "sample/cIoU": {
+    "mean": null,
+    "p50": null,
+    "p90": null,
+    "p95": null
+  },
+  "sample/union_iou": {
+    "mean": null,
+    "p50": null,
+    "p90": null,
+    "p95": null
+  },
+  "sample/best_match_iou": {
+    "mean": null,
+    "p50": null,
+    "p90": null,
+    "p95": null
+  },
   "perf/predict_latency_s": {
     "mean": null,
     "p50": null,
@@ -60,15 +91,15 @@
 
 ## Logged split summaries (W&B summary/*)
 
-- summary/cIoU: 0.7109649528553494
-- summary/count: 5598
-- summary/dataset: moondream/refcoco-m
-- summary/f1: 0.7396282296685235
-- summary/gIoU: 0.7109649528553494
-- summary/mIoU: 0.7109649528553494
-- summary/n_acc: 0.8208288674526617
-- summary/precision: 0.7605731418504927
-- summary/recall: 0.734023627155952
+- summary/cIoU: 0
+- summary/count: 10268
+- summary/dataset: moondream/refcoco_rle
+- summary/f1: 0
+- summary/gIoU: 0
+- summary/mIoU: 0
+- summary/n_acc: 0.15952473704713674
+- summary/precision: 0
+- summary/recall: 0
 - summary/split: validation
 
 ## Outputs

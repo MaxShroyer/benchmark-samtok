@@ -10,6 +10,12 @@ Example:
   python analyze_wandb_runs.py \
     --entity maxshroyer49-na \
     --project samtok-benchmark \
+    --outdir wandb_reports
+
+To summarize a subset of runs:
+  python analyze_wandb_runs.py \
+    --entity maxshroyer49-na \
+    --project samtok-benchmark \
     --runs ljkbcg2y,ux1urfnk \
     --outdir wandb_reports
 """
@@ -120,6 +126,54 @@ def _pick(d: Dict[str, Any], key: str) -> Any:
     return d.get(key)
 
 
+def _extract_miou(summary: Dict[str, Any]) -> Optional[float]:
+    """
+    Best-effort extraction of an mIoU-like scalar from a W&B run summary.
+    Prefer an exact `summary/mIoU` key, then any key containing "miou"
+    (case-insensitive) as a fallback.
+    """
+    exact = _safe_float((summary or {}).get("summary/mIoU"))
+    if exact is not None:
+        return exact
+
+    candidates: List[Tuple[str, float]] = []
+    for k, v in (summary or {}).items():
+        if "miou" not in str(k).lower():
+            continue
+        fv = _safe_float(v)
+        if fv is None:
+            continue
+        candidates.append((str(k), fv))
+
+    if not candidates:
+        return None
+
+    # Prefer summary/* keys, then take the largest numeric candidate.
+    candidates.sort(key=lambda kv: (not kv[0].startswith("summary/"), -kv[1], kv[0]))
+    return candidates[0][1]
+
+
+def _extract_miou_from_history(run) -> Optional[float]:
+    """
+    Fallback when mIoU isn't present in the run summary.
+    Scans history for `summary/mIoU` and returns the last finite value.
+    """
+    last: Optional[float] = None
+    try:
+        for row in run.scan_history(keys=["summary/mIoU"], page_size=1000):
+            if not isinstance(row, dict):
+                continue
+            v = _safe_float(row.get("summary/mIoU"))
+            if v is None:
+                continue
+            if not np.isfinite(v):
+                continue
+            last = float(v)
+    except Exception:
+        return last
+    return last
+
+
 def _summarize_run(run, outdir: str) -> Dict[str, Any]:
     run_dir = os.path.join(outdir, run.id)
     _ensure_dir(run_dir)
@@ -142,6 +196,21 @@ def _summarize_run(run, outdir: str) -> Dict[str, Any]:
     }
 
     summary = dict(getattr(run, "summary", {}) or {})
+    miou = _extract_miou(summary)
+    miou_source = "summary"
+    if miou is None or miou <= 0.0:
+        hist_miou = _extract_miou_from_history(run)
+        if hist_miou is not None and hist_miou > 0.0:
+            miou = hist_miou
+            miou_source = "history"
+
+    is_junk = miou is None or miou <= 0.0
+    if miou is None:
+        junk_reason = "missing_mIoU"
+    elif miou <= 0.0:
+        junk_reason = "mIoU_is_zero"
+    else:
+        junk_reason = None
 
     # Keys we care about from streaming logs
     hist_keys = [
@@ -291,6 +360,10 @@ def _summarize_run(run, outdir: str) -> Dict[str, Any]:
     report: Dict[str, Any] = {
         "meta": meta,
         "config_compact": config_compact,
+        "miou": miou,
+        "miou_source": miou_source,
+        "is_junk": bool(is_junk),
+        "junk_reason": junk_reason,
         "processed_expr_step_max": int(max_step),
         "throughput_last_expr_s": throughput_last,
         "sample_iou": iou_stats.summary(),
@@ -322,6 +395,10 @@ def _summarize_run(run, outdir: str) -> Dict[str, Any]:
         f.write(f"- name: {meta.get('name')}\n")
         f.write(f"- state: {meta.get('state')}\n")
         f.write(f"- url: {meta.get('url')}\n")
+        if miou is None:
+            f.write("- mIoU: null\n")
+        else:
+            f.write(f"- mIoU: {miou:.6f}\n")
         f.write(f"- processed expr (max expr_step): {max_step}\n")
         if throughput_last is not None:
             f.write(f"- last throughput (expr/s): {throughput_last:.4f}\n")
@@ -370,7 +447,11 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--entity", required=True)
     ap.add_argument("--project", required=True)
-    ap.add_argument("--runs", required=True, help="Comma-separated run IDs, e.g. ljkbcg2y,ux1urfnk")
+    ap.add_argument(
+        "--runs",
+        default="",
+        help="Optional comma-separated run IDs. If omitted, summarizes every run in the project.",
+    )
     ap.add_argument("--outdir", default="wandb_reports")
     args = ap.parse_args()
 
@@ -382,24 +463,134 @@ def main() -> None:
     _ensure_dir(args.outdir)
     api = wandb.Api()
 
-    run_ids = [r.strip() for r in args.runs.split(",") if r.strip()]
     reports: List[Dict[str, Any]] = []
-    for run_id in run_ids:
-        path = f"{args.entity}/{args.project}/{run_id}"
-        run = api.run(path)
-        report = _summarize_run(run, args.outdir)
-        reports.append(report)
+    project_path = f"{args.entity}/{args.project}"
+    run_ids = [r.strip() for r in (args.runs or "").split(",") if r.strip()]
+    if run_ids:
+        runs = [api.run(f"{project_path}/{run_id}") for run_id in run_ids]
+    else:
+        runs = list(api.runs(project_path))
 
-    # Write combined index
+    for run in runs:
+        try:
+            report = _summarize_run(run, args.outdir)
+            reports.append(report)
+        except Exception as exc:
+            # Keep going; capture minimal info so the index still includes this run.
+            reports.append(
+                {
+                    "meta": {
+                        "id": getattr(run, "id", None),
+                        "name": getattr(run, "name", None),
+                        "state": getattr(run, "state", None),
+                        "url": getattr(run, "url", None),
+                        "created_at": str(getattr(run, "created_at", "")),
+                    },
+                    "miou": None,
+                    "is_junk": True,
+                    "junk_reason": f"summarize_failed:{type(exc).__name__}",
+                    "error": str(exc),
+                }
+            )
+
+    # Write combined index (flat list, backwards-compatible)
     index_path = os.path.join(args.outdir, "index.json")
     with open(index_path, "w", encoding="utf-8") as f:
         json.dump(reports, f, indent=2)
+
+    # Also write a grouped index + markdown with a "junk" section
+    def _created_at(rep: Dict[str, Any]) -> str:
+        meta = rep.get("meta") or {}
+        return str(meta.get("created_at") or "")
+
+    good = [r for r in reports if not r.get("is_junk")]
+    junk = [r for r in reports if r.get("is_junk")]
+    good.sort(
+        key=lambda r: (
+            -float(r.get("miou") or 0.0),
+            _created_at(r),
+            str((r.get("meta") or {}).get("id") or ""),
+        )
+    )
+    junk.sort(key=lambda r: (_created_at(r), str((r.get("meta") or {}).get("id") or "")), reverse=True)
+
+    grouped_path = os.path.join(args.outdir, "index_grouped.json")
+    grouped = {
+        "project": project_path,
+        "n_total": len(reports),
+        "n_good": len(good),
+        "n_junk": len(junk),
+        "good": [
+            {
+                "id": (r.get("meta") or {}).get("id"),
+                "name": (r.get("meta") or {}).get("name"),
+                "state": (r.get("meta") or {}).get("state"),
+                "url": (r.get("meta") or {}).get("url"),
+                "created_at": (r.get("meta") or {}).get("created_at"),
+                "mIoU": r.get("miou"),
+            }
+            for r in good
+        ],
+        "junk": [
+            {
+                "id": (r.get("meta") or {}).get("id"),
+                "name": (r.get("meta") or {}).get("name"),
+                "state": (r.get("meta") or {}).get("state"),
+                "url": (r.get("meta") or {}).get("url"),
+                "created_at": (r.get("meta") or {}).get("created_at"),
+                "mIoU": r.get("miou"),
+                "reason": r.get("junk_reason"),
+            }
+            for r in junk
+        ],
+    }
+    with open(grouped_path, "w", encoding="utf-8") as f:
+        json.dump(grouped, f, indent=2)
+
+    index_md_path = os.path.join(args.outdir, "index.md")
+    with open(index_md_path, "w", encoding="utf-8") as f:
+        f.write(f"# W&B project index: {project_path}\n\n")
+        f.write(f"- total runs: {len(reports)}\n")
+        f.write(f"- good runs:  {len(good)}\n")
+        f.write(f"- junk runs:  {len(junk)}\n\n")
+
+        f.write("## Runs (sorted by mIoU desc)\n\n")
+        if not good:
+            f.write("_none_\n\n")
+        else:
+            for r in good:
+                meta = r.get("meta") or {}
+                rid = meta.get("id")
+                name = meta.get("name")
+                state = meta.get("state")
+                url = meta.get("url")
+                miou_v = r.get("miou")
+                miou_s = "null" if miou_v is None else f"{miou_v:.6f}"
+                f.write(f"- **{rid}** ({name}) [{state}] mIoU={miou_s} - {url}\n")
+            f.write("\n")
+
+        f.write("## Junk (missing/zero mIoU)\n\n")
+        if not junk:
+            f.write("_none_\n")
+        else:
+            for r in junk:
+                meta = r.get("meta") or {}
+                rid = meta.get("id")
+                name = meta.get("name")
+                state = meta.get("state")
+                url = meta.get("url")
+                reason = r.get("junk_reason")
+                f.write(f"- **{rid}** ({name}) [{state}] reason={reason} - {url}\n")
 
     # Console summary
     for rep in reports:
         meta = rep["meta"]
         print(f"\n=== {meta.get('id')} ({meta.get('name')}) ===")
         print(f"url: {meta.get('url')}")
+        if rep.get("miou") is not None:
+            print(f"mIoU: {rep['miou']:.6f}")
+        else:
+            print("mIoU: null")
         print(f"processed expr (max expr_step): {rep.get('processed_expr_step_max')}")
         if rep.get("throughput_last_expr_s") is not None:
             print(f"last throughput (expr/s): {rep['throughput_last_expr_s']:.4f}")
@@ -415,6 +606,9 @@ def main() -> None:
                 print(f"  - {k}: {n}")
 
     print(f"\nWrote reports to: {os.path.abspath(args.outdir)}")
+    print(f"- flat index: {index_path}")
+    print(f"- grouped index: {grouped_path}")
+    print(f"- markdown index: {index_md_path}")
 
 
 if __name__ == "__main__":

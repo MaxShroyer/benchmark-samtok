@@ -18,6 +18,11 @@ python benchmark.py \
   --model zhouyik/Qwen3-VL-8B-SAMTok \
   --dataset moondream/refcoco-m,moondream/refcoco_rle,moondream/refcoco_plus_rle_val,moondream/lvis_segmentation,lmms-lab/RefCOCOplus
 
+Notes for long runs / avoiding lost progress:
+- Add `--checkpoint-every 50` to write an on-disk checkpoint periodically.
+- If the process OOMs or gets interrupted, re-run with `--resume` to skip already-processed expressions.
+- SAM2 decoding VRAM is controlled by `--sam2-decode-batch-size` (default 1; lowest VRAM).
+
   python benchmark.py \
   --model zhouyik/Qwen3-VL-4B-SAMTok \
   --dataset moondream/refcoco-m,moondream/refcoco_rle,moondream/refcoco_plus_rle_val,moondream/lvis_segmentation,lmms-lab/RefCOCOplus
@@ -71,7 +76,7 @@ brokern
   python benchmark.py \
   --model zhouyik/Qwen3-VL-8B-SAMTok \
   --dataset moondream/lvis_segmentation
-  
+
   python benchmark.py \
   --model zhouyik/Qwen3-VL-4B-SAMTok \
   --dataset moondream/lvis_segmentation
@@ -87,3 +92,4 @@ Running
   python benchmark.py \
   --model zhouyik/Qwen3-VL-4B-SAMTok \
   --dataset lmms-lab/RefCOCOplus
+

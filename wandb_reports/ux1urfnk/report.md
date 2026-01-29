@@ -1,8 +1,9 @@
 # W&B run report: ux1urfnk
 
 - name: glorious-vortex-12
-- state: running
+- state: crashed
 - url: https://wandb.ai/maxshroyer49-na/samtok-benchmark/runs/ux1urfnk
+- mIoU: 0.000000
 - processed expr (max expr_step): 0
 
 ## Config (compact)
@@ -40,6 +41,36 @@
     "p90": null,
     "p95": null
   },
+  "sample/box_iou": {
+    "mean": null,
+    "p50": null,
+    "p90": null,
+    "p95": null
+  },
+  "sample/gIoU": {
+    "mean": null,
+    "p50": null,
+    "p90": null,
+    "p95": null
+  },
+  "sample/cIoU": {
+    "mean": null,
+    "p50": null,
+    "p90": null,
+    "p95": null
+  },
+  "sample/union_iou": {
+    "mean": null,
+    "p50": null,
+    "p90": null,
+    "p95": null
+  },
+  "sample/best_match_iou": {
+    "mean": null,
+    "p50": null,
+    "p90": null,
+    "p95": null
+  },
   "perf/predict_latency_s": {
     "mean": null,
     "p50": null,
@@ -60,15 +91,15 @@
 
 ## Logged split summaries (W&B summary/*)
 
-- summary/cIoU: 0.6268458828341418
-- summary/count: 5598
-- summary/dataset: moondream/refcoco-m
-- summary/f1: 0.6557242131996223
-- summary/gIoU: 0.6268458828341418
-- summary/mIoU: 0.6268458828341418
-- summary/n_acc: 0.9841014648088604
-- summary/precision: 0.7005480290564317
-- summary/recall: 0.6462919735104425
+- summary/cIoU: 0
+- summary/count: 10268
+- summary/dataset: moondream/refcoco_rle
+- summary/f1: 0
+- summary/gIoU: 0
+- summary/mIoU: 0
+- summary/n_acc: 0.020062329567588626
+- summary/precision: 0
+- summary/recall: 0
 - summary/split: validation
 
 ## Outputs
