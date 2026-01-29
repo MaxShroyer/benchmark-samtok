@@ -483,8 +483,37 @@ def decode_masks_from_codes(
     pred_masks = F.interpolate(
         pred_masks, size=image.size[::-1], mode="bilinear", align_corners=False
     )
-    pred_masks = (pred_masks > 0.5).cpu().numpy().astype(np.uint8)
-    return [pred_masks[idx, 0] for idx in range(pred_masks.shape[0])]
+    # Threshold, with an "empty-mask rescue" for under-confident outputs.
+    # This keeps 0.5 as the default, but if the result is completely empty we
+    # try lower thresholds. This is designed to be no-op for models that already
+    # produce non-empty masks at 0.5.
+    probs = pred_masks  # (B, 1, H, W) float tensor in [0,1] (ideally)
+    thresholds = (0.5, 0.35, 0.2, 0.1)
+    chosen_thr = thresholds[0]
+    chosen = None
+    for thr in thresholds:
+        cand = (probs > thr)
+        # Avoid both the all-zero and all-one degenerate cases.
+        if cand.any() and not bool(cand.all().item()):
+            chosen = cand
+            chosen_thr = thr
+            break
+    if chosen is None:
+        chosen = (probs > thresholds[0])
+
+    debug_mask_stats = os.getenv("SAMTOK_DEBUG_MASK_STATS", "").strip().lower() in {"1", "true", "yes", "y"}
+    if debug_mask_stats:
+        # Print a tiny amount of info; safe for short debug runs.
+        with torch.no_grad():
+            # chosen is bool tensor (B,1,H,W)
+            areas = chosen.flatten(1).sum(dim=1).tolist()
+        print(
+            f"[samtok-benchmark] mask stats: min={pm_min:.4f} max={pm_max:.4f} thr={chosen_thr} areas(first3)={areas[:3]}",
+            flush=True,
+        )
+
+    pred_np = chosen.cpu().numpy().astype(np.uint8)
+    return [pred_np[idx, 0] for idx in range(pred_np.shape[0])]
 
 
 def predict_masks(
