@@ -132,46 +132,40 @@ def load_vlm(model_path: str) -> torch.nn.Module:
         ) from exc
     auto_vision2seq = getattr(transformers, "AutoModelForVision2Seq", None)
 
-    fallback_model: torch.nn.Module
-    if auto_vision2seq is not None:
+    def try_load(cls, trust_remote_code: bool) -> torch.nn.Module | None:
         try:
-            fallback_model = auto_vision2seq.from_pretrained(
+            return cls.from_pretrained(
                 model_path,
                 torch_dtype="auto",
-                trust_remote_code=model_kwargs.get("trust_remote_code", False),
+                trust_remote_code=trust_remote_code,
             )
         except Exception:
-            try:
-                fallback_model = AutoModelForCausalLM.from_pretrained(
-                    model_path,
-                    torch_dtype="auto",
-                    trust_remote_code=model_kwargs.get("trust_remote_code", False),
-                )
-            except ValueError:
-                fallback_model = AutoModel.from_pretrained(
-                    model_path,
-                    torch_dtype="auto",
-                    trust_remote_code=model_kwargs.get("trust_remote_code", False),
-                )
-    else:
-        try:
-            fallback_model = AutoModelForCausalLM.from_pretrained(
-                model_path,
-                torch_dtype="auto",
-                trust_remote_code=model_kwargs.get("trust_remote_code", False),
-            )
-        except ValueError:
-            fallback_model = AutoModel.from_pretrained(
-                model_path,
-                torch_dtype="auto",
-                trust_remote_code=model_kwargs.get("trust_remote_code", False),
-            )
-    if not hasattr(fallback_model, "generate"):
-        raise RuntimeError(
-            "Model backend does not provide `generate`. Install a compatible "
-            "transformers build or use a Qwen* VL model class that supports generation."
-        )
-    return fallback_model
+            return None
+
+    trust_remote_code = bool(model_kwargs.get("trust_remote_code", False))
+    candidates: list[tuple[type, bool]] = []
+    if auto_vision2seq is not None:
+        candidates.append((auto_vision2seq, trust_remote_code))
+        if trust_remote_code:
+            candidates.append((auto_vision2seq, False))
+    candidates.append((AutoModelForCausalLM, trust_remote_code))
+    if trust_remote_code:
+        candidates.append((AutoModelForCausalLM, False))
+    candidates.append((AutoModel, trust_remote_code))
+    if trust_remote_code:
+        candidates.append((AutoModel, False))
+
+    for cls, use_remote in candidates:
+        fallback_model = try_load(cls, use_remote)
+        if fallback_model is None:
+            continue
+        if hasattr(fallback_model, "generate"):
+            return fallback_model
+
+    raise RuntimeError(
+        "Model backend does not provide `generate`. Install a compatible "
+        "transformers build or use a Qwen* VL model class that supports generation."
+    )
 
 
 def load_processor(model_path: str) -> AutoProcessor:
