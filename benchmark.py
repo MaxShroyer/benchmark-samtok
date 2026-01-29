@@ -132,14 +132,19 @@ def load_vlm(model_path: str) -> torch.nn.Module:
         trust_remote_code: bool,
         *,
         ignore_mismatched_sizes: bool,
+        config: Any | None,
     ) -> torch.nn.Module | None:
         try:
-            return cls.from_pretrained(
+            kwargs: Dict[str, Any] = dict(
                 model_path,
                 torch_dtype="auto",
                 trust_remote_code=trust_remote_code,
                 ignore_mismatched_sizes=ignore_mismatched_sizes,
             )
+            if config is not None:
+                # Reuse the config we already loaded (and potentially patched).
+                kwargs["config"] = config
+            return cls.from_pretrained(**kwargs)
         except Exception as exc:
             _debug(
                 f"{cls.__name__} from_pretrained failed "
@@ -158,6 +163,13 @@ def load_vlm(model_path: str) -> torch.nn.Module:
     for use_remote in trust_order:
         try:
             cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=use_remote)
+            # Some environments/models end up with `auto_map=None`, but some
+            # Transformers codepaths assume it's a dict and call `.get(...)`.
+            if getattr(cfg, "auto_map", None) is None:
+                setattr(cfg, "auto_map", {})
+            _debug(
+                f"config auto_map type={type(getattr(cfg, 'auto_map', None)).__name__}"
+            )
             _debug(
                 f"config loaded (trust_remote_code={use_remote}): "
                 f"model_type={getattr(cfg, 'model_type', None)} "
@@ -187,6 +199,7 @@ def load_vlm(model_path: str) -> torch.nn.Module:
                     cls,
                     use_remote,
                     ignore_mismatched_sizes=ignore_mismatch,
+                    config=cfg,
                 )
                 if fallback_model is None:
                     continue
