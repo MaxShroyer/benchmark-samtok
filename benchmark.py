@@ -70,8 +70,6 @@ def resolve_asset(model_path: str, filename: str) -> str:
 
 def load_vlm(model_path: str) -> torch.nn.Module:
     model_kwargs: Dict[str, Any] = {"torch_dtype": "auto"}
-    if "qwen" in model_path.lower():
-        model_kwargs["trust_remote_code"] = True
 
     if "qwen3" in model_path.lower():
         from transformers import Qwen3VLForConditionalGeneration
@@ -138,29 +136,25 @@ def load_vlm(model_path: str) -> torch.nn.Module:
         except Exception:
             return None
 
-    trust_remote_code = bool(model_kwargs.get("trust_remote_code", False))
-    candidates: list[tuple[type, bool]] = []
-    # Prefer AutoModelForVision2Seq for Qwen VL variants when available.
-    if auto_vision2seq is not None:
-        candidates.append((auto_vision2seq, trust_remote_code))
-        if trust_remote_code:
-            candidates.append((auto_vision2seq, False))
-    candidates.append((model_cls, trust_remote_code))
-    if trust_remote_code:
-        candidates.append((model_cls, False))
-    candidates.append((AutoModelForCausalLM, trust_remote_code))
-    if trust_remote_code:
-        candidates.append((AutoModelForCausalLM, False))
-    candidates.append((AutoModel, trust_remote_code))
-    if trust_remote_code:
-        candidates.append((AutoModel, False))
+    # Qwen model repos sometimes ship custom modeling code that returns a bare
+    # torch.nn.Module without GenerationMixin (no `.generate`). Prefer the
+    # official Transformers implementations first.
+    trust_order = [False, True] if "qwen" in model_path.lower() else [False]
 
-    for cls, use_remote in candidates:
-        fallback_model = try_load(cls, use_remote)
-        if fallback_model is None:
-            continue
-        if hasattr(fallback_model, "generate"):
-            return fallback_model
+    candidates: list[type] = []
+    if auto_vision2seq is not None:
+        candidates.append(auto_vision2seq)
+    candidates.append(model_cls)
+    candidates.append(AutoModelForCausalLM)
+    candidates.append(AutoModel)
+
+    for cls in candidates:
+        for use_remote in trust_order:
+            fallback_model = try_load(cls, use_remote)
+            if fallback_model is None:
+                continue
+            if hasattr(fallback_model, "generate"):
+                return fallback_model
 
     raise RuntimeError(
         "Model backend does not provide `generate`. Install a compatible "
