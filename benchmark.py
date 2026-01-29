@@ -127,25 +127,25 @@ def load_vlm(model_path: str) -> torch.nn.Module:
     else:
         raise ValueError(f"Unknown model family for {model_path}")
 
-    def try_load(cls, trust_remote_code: bool) -> torch.nn.Module | None:
+    def _attempt_load(
+        cls,
+        trust_remote_code: bool,
+        *,
+        ignore_mismatched_sizes: bool,
+    ) -> torch.nn.Module | None:
         try:
             return cls.from_pretrained(
                 model_path,
                 torch_dtype="auto",
                 trust_remote_code=trust_remote_code,
+                ignore_mismatched_sizes=ignore_mismatched_sizes,
             )
-        except Exception:
-            return None
-
-    def try_load_ignore_mismatch(cls, trust_remote_code: bool) -> torch.nn.Module | None:
-        try:
-            return cls.from_pretrained(
-                model_path,
-                torch_dtype="auto",
-                trust_remote_code=trust_remote_code,
-                ignore_mismatched_sizes=True,
+        except Exception as exc:
+            _debug(
+                f"{cls.__name__} from_pretrained failed "
+                f"(trust_remote_code={trust_remote_code}, ignore_mismatched_sizes={ignore_mismatched_sizes}): "
+                f"{type(exc).__name__}: {exc}"
             )
-        except Exception:
             return None
 
     is_qwen = "qwen" in model_path.lower()
@@ -179,24 +179,25 @@ def load_vlm(model_path: str) -> torch.nn.Module:
     candidates.append(AutoModelForCausalLM)
     candidates.append(AutoModel)
 
+    last_model: torch.nn.Module | None = None
     for cls in candidates:
         for use_remote in trust_order:
-            for loader, label in (
-                (try_load, "from_pretrained"),
-                (try_load_ignore_mismatch, "from_pretrained(ignore_mismatched_sizes=True)"),
-            ):
-                fallback_model = loader(cls, use_remote)
+            for ignore_mismatch in (False, True):
+                fallback_model = _attempt_load(
+                    cls,
+                    use_remote,
+                    ignore_mismatched_sizes=ignore_mismatch,
+                )
                 if fallback_model is None:
-                    _debug(f"{cls.__name__} {label} failed (trust_remote_code={use_remote})")
                     continue
                 has_gen = hasattr(fallback_model, "generate")
                 _debug(
-                    f"{cls.__name__} {label} ok (trust_remote_code={use_remote}) "
+                    f"{cls.__name__} from_pretrained ok "
+                    f"(trust_remote_code={use_remote}, ignore_mismatched_sizes={ignore_mismatch}) "
                     f"-> type={type(fallback_model).__name__} generate={has_gen}"
                 )
                 if has_gen:
                     return fallback_model
-                # Keep the most recent successfully loaded model as a patch candidate.
                 last_model = fallback_model
 
     # Last resort: some Qwen repos load a model class that doesn't inherit GenerationMixin
