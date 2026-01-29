@@ -123,26 +123,49 @@ def load_vlm(model_path: str) -> torch.nn.Module:
         return model
 
     try:
-        from transformers import AutoModelForCausalLM, AutoModel
+        import transformers
+        from transformers import AutoModel, AutoModelForCausalLM
     except ImportError as exc:  # pragma: no cover - environment specific
         raise RuntimeError(
             "Loaded a model without `generate`, and auto model classes "
             "are unavailable. Please upgrade transformers."
         ) from exc
+    auto_vision2seq = getattr(transformers, "AutoModelForVision2Seq", None)
 
     fallback_model: torch.nn.Module
-    try:
-        fallback_model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype="auto",
-            trust_remote_code=model_kwargs.get("trust_remote_code", False),
-        )
-    except ValueError:
-        fallback_model = AutoModel.from_pretrained(
-            model_path,
-            torch_dtype="auto",
-            trust_remote_code=model_kwargs.get("trust_remote_code", False),
-        )
+    if auto_vision2seq is not None:
+        try:
+            fallback_model = auto_vision2seq.from_pretrained(
+                model_path,
+                torch_dtype="auto",
+                trust_remote_code=model_kwargs.get("trust_remote_code", False),
+            )
+        except Exception:
+            try:
+                fallback_model = AutoModelForCausalLM.from_pretrained(
+                    model_path,
+                    torch_dtype="auto",
+                    trust_remote_code=model_kwargs.get("trust_remote_code", False),
+                )
+            except ValueError:
+                fallback_model = AutoModel.from_pretrained(
+                    model_path,
+                    torch_dtype="auto",
+                    trust_remote_code=model_kwargs.get("trust_remote_code", False),
+                )
+    else:
+        try:
+            fallback_model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                torch_dtype="auto",
+                trust_remote_code=model_kwargs.get("trust_remote_code", False),
+            )
+        except ValueError:
+            fallback_model = AutoModel.from_pretrained(
+                model_path,
+                torch_dtype="auto",
+                trust_remote_code=model_kwargs.get("trust_remote_code", False),
+            )
     if not hasattr(fallback_model, "generate"):
         raise RuntimeError(
             "Model backend does not provide `generate`. Install a compatible "
