@@ -78,13 +78,29 @@ def load_vlm(model_path: str) -> torch.nn.Module:
             from transformers import Qwen2_5VLForConditionalGeneration
         except ImportError as exc:
             try:
-                from transformers.models.qwen2_5_vl import (  # type: ignore
+                from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (  # type: ignore
                     Qwen2_5VLForConditionalGeneration,
                 )
             except ImportError:
-                from transformers import AutoModelForConditionalGeneration
+                try:
+                    import transformers
 
-                return AutoModelForConditionalGeneration.from_pretrained(
+                    auto_cls = getattr(
+                        transformers, "AutoModelForConditionalGeneration", None
+                    ) or getattr(transformers, "AutoModel", None)
+                    if auto_cls is None:
+                        raise ImportError(
+                            "AutoModelForConditionalGeneration not available in transformers."
+                        )
+                except Exception as inner_exc:
+                    raise ImportError(
+                        "Qwen2.5-VL model class not found and auto model fallback "
+                        "is unavailable in this transformers build. "
+                        "Please install a standard transformers wheel (e.g. "
+                        "`pip install -U \"transformers>=4.49.0,<5.0.0\"`)."
+                    ) from inner_exc
+
+                return auto_cls.from_pretrained(
                     model_path, torch_dtype="auto", trust_remote_code=True
                 )
 
