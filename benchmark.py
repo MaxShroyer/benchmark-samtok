@@ -79,7 +79,8 @@ def load_vlm(model_path: str) -> torch.nn.Module:
         except ImportError as exc:
             raise ImportError(
                 "Qwen2.5-VL model class not found. "
-                "Please install a transformers version that includes Qwen2_5VLForConditionalGeneration."
+                "Please install/upgrade transformers to a version that includes "
+                "Qwen2_5VLForConditionalGeneration (e.g. `pip install -U \"transformers>=4.49.0\"`)."
             ) from exc
 
         model_cls = Qwen2_5VLForConditionalGeneration
